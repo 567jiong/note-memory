@@ -57,13 +57,17 @@ func TestParseChineseNumeralChapters(t *testing.T) {
 }
 
 func TestParseWithPreamble(t *testing.T) {
-	content := `《修仙之路》
+	content := `==========================================================
+更多精校小说尽在星舞藏书下载：http://www.xwcs8.com/
+==========================================================
+凡人修仙传 作者：忘语
 
-作者：某大神
+内容简介：
+　　一个普通的山村穷小子...
 
-简介：这是一部修仙小说，讲述了一个少年从平凡到巅峰的故事。
+第一卷 七玄门风云
 
-第一章 开始修炼
+第一章 山边小村
 修炼的第一天，主角感受到了天地灵气。`
 
 	chapters := Parse(content)
@@ -73,18 +77,50 @@ func TestParseWithPreamble(t *testing.T) {
 	}
 	hasCh1 := false
 	for _, ch := range chapters {
-		if ch.Number == 1 {
+		if ch.Number == 1 && strings.Contains(ch.Title, "山边小村") {
 			hasCh1 = true
 			break
 		}
 	}
 	if !hasCh1 {
-		t.Error("should have chapter 1")
-		t.Logf("chapters: %+v", chapters)
+		t.Error("should have chapter 1 with 山边小村")
+		for i, ch := range chapters {
+			t.Logf("  chapter %d: number=%d title=%q", i, ch.Number, ch.Title)
+		}
+	}
+}
+
+func TestParseVolumeHeaderIsNotChapter(t *testing.T) {
+	// "第一卷" alone should NOT be treated as a chapter
+	content := `凡人修仙传 作者：忘语
+
+第一卷 七玄门风云
+
+第一章 山边小村
+这是第一章的内容。
+
+第二章 山边诡事
+这是第二章的内容。`
+
+	chapters := Parse(content)
+
+	// Should have 2 real chapters, not 3 (第一卷 is NOT a chapter)
+	if len(chapters) != 2 {
+		t.Fatalf("expected 2 chapters, got %d", len(chapters))
+		for i, ch := range chapters {
+			t.Logf("  chapter %d: number=%d title=%q", i, ch.Number, ch.Title)
+		}
+	}
+	if chapters[0].Number != 1 || !strings.Contains(chapters[0].Title, "山边小村") {
+		t.Errorf("chapter 0: expected chapter 1 山边小村, got %d %q", chapters[0].Number, chapters[0].Title)
+	}
+	if chapters[1].Number != 2 || !strings.Contains(chapters[1].Title, "山边诡事") {
+		t.Errorf("chapter 1: expected chapter 2 山边诡事, got %d %q", chapters[1].Number, chapters[1].Title)
 	}
 }
 
 func TestParseWithVolumeChapter(t *testing.T) {
+	// "第一卷 第一章" on same line should still match as chapter
 	content := `第一卷 第一章 少年
 少年时期的往事，埋下了许多伏笔。
 
@@ -136,27 +172,49 @@ func TestParseChapterSection(t *testing.T) {
 	}
 }
 
-func TestDetectNovelTitle(t *testing.T) {
+func TestDetectNovelMetaBracket(t *testing.T) {
 	content := `《凡人修仙传》
 作者：忘语
 
 第一章 山边小村
-一个普通的少年，生活在山边的小村里。`
+正文内容...`
 
-	title := DetectNovelTitle(content)
-	if title != "凡人修仙传" {
-		t.Errorf("expected '凡人修仙传', got %q", title)
+	meta := DetectNovelMeta(content)
+	if meta.Title != "凡人修仙传" {
+		t.Errorf("expected title '凡人修仙传', got %q", meta.Title)
 	}
 }
 
-func TestDetectNovelTitleFallback(t *testing.T) {
-	content := `这是一个没有书名号的小说标题
+func TestDetectNovelMetaAuthorFormat(t *testing.T) {
+	content := `==========================================================
+更多精校小说尽在星舞藏书下载：http://www.xwcs8.com/
+==========================================================
+凡人修仙传 作者：忘语
+
+内容简介：
+　　一个普通的山村穷小子...
+
+第一卷 七玄门风云
+
+第一章 山边小村`
+
+	meta := DetectNovelMeta(content)
+	if meta.Title != "凡人修仙传" {
+		t.Errorf("expected title '凡人修仙传', got %q", meta.Title)
+	}
+	if meta.Author != "忘语" {
+		t.Errorf("expected author '忘语', got %q", meta.Author)
+	}
+}
+
+func TestDetectNovelMetaFallback(t *testing.T) {
+	content := `这是一个没有书名号也没有作者标记的小说标题
 
 第一章 开始
 故事从这里开始。`
 
-	title := DetectNovelTitle(content)
-	if title == "未命名小说" {
+	meta := DetectNovelMeta(content)
+	if meta.Title == "未命名小说" {
 		t.Error("should have detected a fallback title")
 	}
 }

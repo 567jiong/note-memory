@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"time"
+
+	"github.com/pgvector/pgvector-go"
 )
 
 // Novel represents a novel/book.
@@ -27,9 +29,10 @@ type Chapter struct {
 	Title         string    `json:"title" gorm:"type:varchar(500);default:''"`
 	Content       string    `json:"content" gorm:"type:text;not null"`
 	Summary       string    `json:"summary" gorm:"type:text;default:''"`
-	Characters    JSONB     `json:"characters" gorm:"type:jsonb;default:'[]'"`
-	Events        JSONB     `json:"events" gorm:"type:jsonb;default:'[]'"`
-	CreatedAt     time.Time `json:"created_at"`
+	Characters    JSONB            `json:"characters" gorm:"type:jsonb;default:'[]'"`
+	Events        JSONB            `json:"events" gorm:"type:jsonb;default:'[]'"`
+	Embedding     *pgvector.Vector `json:"-" gorm:"type:vector(1024)"`
+	CreatedAt     time.Time        `json:"created_at"`
 }
 
 func (Chapter) TableName() string { return "chapters" }
@@ -54,6 +57,42 @@ type Recap struct {
 }
 
 func (Recap) TableName() string { return "recaps" }
+
+// QACache stores cached Q&A results for a specific novel + progress.
+type QACache struct {
+	ID             int64     `json:"id" gorm:"primaryKey;autoIncrement"`
+	NovelID        int64     `json:"novel_id" gorm:"index:idx_qa_novel_chapter"`
+	CurrentChapter int       `json:"current_chapter" gorm:"index:idx_qa_novel_chapter"`
+	Question       string    `json:"question" gorm:"type:text;not null"`
+	Answer         string    `json:"answer" gorm:"type:text;not null"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+func (QACache) TableName() string { return "qa_cache" }
+
+// EntityAlias maps nicknames/aliases to canonical character names for search expansion.
+type EntityAlias struct {
+	ID            int64  `json:"id" gorm:"primaryKey;autoIncrement"`
+	NovelID       int64  `json:"novel_id" gorm:"uniqueIndex:idx_entity_alias_novel"`
+	CanonicalName string `json:"canonical_name" gorm:"type:varchar(200)"`
+	Alias         string `json:"alias" gorm:"type:varchar(200);uniqueIndex:idx_entity_alias_novel"`
+}
+
+func (EntityAlias) TableName() string { return "entity_aliases" }
+
+// AliasInfo holds canonical name and all its aliases (for search expansion).
+type AliasInfo struct {
+	Name    string   `json:"name"`
+	Aliases []string `json:"aliases"`
+}
+
+// HybridSearchResult holds a ranked search result from hybrid search.
+type HybridSearchResult struct {
+	Chapter    Chapter `json:"chapter"`
+	SemScore   float64 `json:"semantic_score"`
+	TextScore  float64 `json:"text_score"`
+	FinalScore float64 `json:"final_score"`
+}
 
 // --- Character / Event structs for JSONB serialization ---
 

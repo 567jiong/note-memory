@@ -10,12 +10,19 @@ import (
 )
 
 type NovelHandler struct {
-	novelSvc *service.NovelService
-	recapSvc *service.RecapService
+	novelSvc  *service.NovelService
+	recapSvc  *service.RecapService
+	qaSvc     *service.QAService
+	searchSvc *service.SearchService
 }
 
-func NewNovelHandler(novelSvc *service.NovelService, recapSvc *service.RecapService) *NovelHandler {
-	return &NovelHandler{novelSvc: novelSvc, recapSvc: recapSvc}
+func NewNovelHandler(
+	novelSvc *service.NovelService,
+	recapSvc *service.RecapService,
+	qaSvc *service.QAService,
+	searchSvc *service.SearchService,
+) *NovelHandler {
+	return &NovelHandler{novelSvc: novelSvc, recapSvc: recapSvc, qaSvc: qaSvc, searchSvc: searchSvc}
 }
 
 // Upload handles TXT file upload.
@@ -33,12 +40,11 @@ func (h *NovelHandler) Upload(c *gin.Context) {
 		return
 	}
 
-	// Trigger async AI parsing
 	h.novelSvc.StartParse(result.Novel.ID)
 
 	c.JSON(http.StatusOK, gin.H{
 		"novel":   result.Novel,
-		"message": "小说上传成功，正在后台进行 AI 解析...",
+		"message": "小说上传成功，正在后台进行 AI 解析（总结 + embedding + 全文索引 + 别名）...",
 	})
 }
 
@@ -114,7 +120,19 @@ func (h *NovelHandler) TriggerParse(c *gin.Context) {
 	}
 
 	h.novelSvc.StartParse(id)
-	c.JSON(http.StatusOK, gin.H{"message": "AI 解析已开始"})
+	c.JSON(http.StatusOK, gin.H{"message": "AI 解析已开始（总结 + embedding + 全文索引）"})
+}
+
+// TriggerFillEmbeddings triggers backfill of empty embedding fields from chapter content.
+func (h *NovelHandler) TriggerFillEmbeddings(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的小说 ID"})
+		return
+	}
+
+	h.novelSvc.FillEmbeddings(id)
+	c.JSON(http.StatusOK, gin.H{"message": "Embedding 回填已开始（使用章节内容，≤400字截断）"})
 }
 
 // GenerateRecap generates a reading recovery recap.
@@ -155,4 +173,94 @@ func (h *NovelHandler) GetRecap(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"recap": recap})
+}
+
+// AskQuestion handles spoiler-free Q&A.
+func (h *NovelHandler) AskQuestion(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的小说 ID"})
+		return
+	}
+
+	var req struct {
+		Question string `json:"question"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.Question == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请提供 question"})
+		return
+	}
+
+	answer, err := h.qaSvc.AskQuestion(c.Request.Context(), id, req.Question)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "问答失败: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"question": req.Question, "answer": answer})
+}
+
+// Search performs hybrid semantic + full-text search on chapters.
+func (h *NovelHandler) Search(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的小说 ID"})
+		return
+	}
+
+	query := c.Query("q")
+	if query == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请提供搜索关键词 q"})
+		return
+	}
+
+	progress, err := h.novelSvc.GetProgress(id)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请先设置阅读进度"})
+		return
+	}
+
+	results, err := h.searchSvc.HybridSearch(c.Request.Context(), query, id, progress.CurrentChapter, 10)
+	if err != nil {
+		// Fallback to semantic-only
+		chapters, scores, err2 := h.qaSvc.SearchChapters(c.Request.Context(), id, query)
+		if err2 != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "搜索失败: " + err.Error()})
+			return
+		}
+		type sr struct {
+			Chapter model.Chapter `json:"chapter"`
+			Score   float64       `json:"score"`
+		}
+		out := make([]sr, 0, len(chapters))
+		for i, ch := range chapters {
+			out = append(out, sr{Chapter: ch, Score: scores[i]})
+		}
+		if out == nil {
+			out = []sr{}
+		}
+		c.JSON(http.StatusOK, gin.H{"results": out, "query": query, "mode": "semantic_only"})
+		return
+	}
+
+	type sr struct {
+		Chapter    model.Chapter `json:"chapter"`
+		SemScore   float64       `json:"semantic_score"`
+		TextScore  float64       `json:"text_score"`
+		FinalScore float64       `json:"final_score"`
+	}
+	out := make([]sr, 0, len(results))
+	for _, r := range results {
+		out = append(out, sr{
+			Chapter:    r.Chapter,
+			SemScore:   r.SemScore,
+			TextScore:  r.TextScore,
+			FinalScore: r.FinalScore,
+		})
+	}
+	if out == nil {
+		out = []sr{}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"results": out, "query": query, "mode": "hybrid"})
 }

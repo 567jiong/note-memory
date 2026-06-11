@@ -28,9 +28,12 @@ func (d DBConfig) DSN() string {
 }
 
 type OpenAIConfig struct {
-	APIKey   string
-	BaseURL  string
-	Model    string
+	APIKey              string
+	BaseURL             string
+	Model               string
+	EmbeddingAPIKey     string // 独立 embedding API key，空则复用 APIKey
+	EmbeddingBaseURL    string // 独立 embedding API 地址，空则复用 BaseURL
+	EmbeddingModel      string
 }
 
 type ServerConfig struct {
@@ -47,9 +50,12 @@ func Load() *Config {
 			Name:     getEnv("DB_NAME", "note_memory"),
 		},
 		OpenAI: OpenAIConfig{
-			APIKey:  getEnv("OPENAI_API_KEY", ""),
-			BaseURL: getEnv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-			Model:   getEnv("OPENAI_MODEL", "gpt-4o-mini"),
+			APIKey:           getEnv("OPENAI_API_KEY", ""),
+			BaseURL:          getEnv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+			Model:            getEnv("OPENAI_MODEL", "gpt-4o-mini"),
+			EmbeddingAPIKey:  getEnv("OPENAI_EMBEDDING_API_KEY", ""),
+			EmbeddingBaseURL: getEnv("OPENAI_EMBEDDING_BASE_URL", ""),
+			EmbeddingModel:   getEnv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
 		},
 		Server: ServerConfig{
 			Port: getEnvInt("SERVER_PORT", 8080),

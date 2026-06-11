@@ -1,43 +1,23 @@
 {
   "openapi": "3.0.3",
   "info": {
-    "title": "阅读记忆助手 API",
-    "description": "Reading Memory Agent — 帮助长篇小说读者在中断后快速恢复阅读状态，严格无剧透。\n\n## 核心概念\n- 上传 TXT 小说 → 自动拆分章节 → AI 逐章总结 → 按阅读进度生成回顾\n- 所有 AI 调用严格限制在用户当前阅读进度以内，绝不剧透",
-    "version": "1.0.0",
-    "contact": {
-      "name": "Reading Memory Agent"
-    }
+    "title": "阅读记忆助手 API (Phase 2 — RAG)",
+    "description": "Reading Memory Agent — 基于 pgvector + RAG 的智能阅读记忆恢复。核心功能：上传 TXT → AI 章节总结 + embedding 向量化 → 语义检索 → 无剧透回顾/问答。",
+    "version": "2.0.0"
   },
-  "servers": [
-    {
-      "url": "http://localhost:8080",
-      "description": "本地开发环境"
-    }
-  ],
+  "servers": [{ "url": "http://localhost:8080", "description": "本地开发" }],
   "tags": [
-    {
-      "name": "小说管理",
-      "description": "上传、查看、管理小说"
-    },
-    {
-      "name": "阅读进度",
-      "description": "跟踪用户阅读进度"
-    },
-    {
-      "name": "AI 解析",
-      "description": "触发 AI 对章节进行总结和人物/事件提取"
-    },
-    {
-      "name": "阅读回顾",
-      "description": "生成和获取无剧透阅读恢复回顾"
-    }
+    { "name": "小说管理" },
+    { "name": "阅读进度" },
+    { "name": "AI 解析" },
+    { "name": "阅读回顾" },
+    { "name": "RAG 检索" }
   ],
   "paths": {
     "/api/novels": {
       "post": {
         "tags": ["小说管理"],
         "summary": "上传 TXT 小说",
-        "description": "上传 TXT 文件，系统自动识别章节标题并拆分章节，同时触发后台 AI 异步解析。",
         "operationId": "uploadNovel",
         "requestBody": {
           "required": true,
@@ -47,11 +27,7 @@
                 "type": "object",
                 "required": ["file"],
                 "properties": {
-                  "file": {
-                    "type": "string",
-                    "format": "binary",
-                    "description": "TXT 格式小说文件"
-                  }
+                  "file": { "type": "string", "format": "binary", "description": "TXT 格式小说文件" }
                 }
               }
             }
@@ -59,35 +35,16 @@
         },
         "responses": {
           "200": {
-            "description": "上传成功",
+            "description": "上传成功，后台自动触发 AI 解析",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "properties": {
                     "novel": { "$ref": "#/components/schemas/Novel" },
-                    "message": {
-                      "type": "string",
-                      "example": "小说上传成功，正在后台进行 AI 解析..."
-                    }
+                    "message": { "type": "string" }
                   }
                 }
-              }
-            }
-          },
-          "400": {
-            "description": "文件缺失或格式错误",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/Error" }
-              }
-            }
-          },
-          "500": {
-            "description": "服务器内部错误",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/Error" }
               }
             }
           }
@@ -96,7 +53,6 @@
       "get": {
         "tags": ["小说管理"],
         "summary": "获取小说列表",
-        "description": "返回所有已上传的小说，按更新时间倒序排列。",
         "operationId": "listNovels",
         "responses": {
           "200": {
@@ -106,10 +62,7 @@
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "novels": {
-                      "type": "array",
-                      "items": { "$ref": "#/components/schemas/Novel" }
-                    }
+                    "novels": { "type": "array", "items": { "$ref": "#/components/schemas/Novel" } }
                   }
                 }
               }
@@ -121,17 +74,10 @@
     "/api/novels/{id}": {
       "get": {
         "tags": ["小说管理"],
-        "summary": "获取小说详情",
-        "description": "返回小说基本信息、章节列表和阅读进度。",
+        "summary": "获取小说详情 + 章节 + 进度",
         "operationId": "getNovel",
         "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "description": "小说 ID",
-            "schema": { "type": "integer", "format": "int64", "example": 1 }
-          }
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } }
         ],
         "responses": {
           "200": {
@@ -142,34 +88,10 @@
                   "type": "object",
                   "properties": {
                     "novel": { "$ref": "#/components/schemas/Novel" },
-                    "chapters": {
-                      "type": "array",
-                      "items": { "$ref": "#/components/schemas/Chapter" }
-                    },
-                    "progress": {
-                      "anyOf": [
-                        { "$ref": "#/components/schemas/ReadingProgress" },
-                        { "type": "null" }
-                      ]
-                    }
+                    "chapters": { "type": "array", "items": { "$ref": "#/components/schemas/Chapter" } },
+                    "progress": { "$ref": "#/components/schemas/ReadingProgress" }
                   }
                 }
-              }
-            }
-          },
-          "400": {
-            "description": "无效的 ID",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/Error" }
-              }
-            }
-          },
-          "404": {
-            "description": "小说不存在",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/Error" }
               }
             }
           }
@@ -180,16 +102,9 @@
       "put": {
         "tags": ["阅读进度"],
         "summary": "更新阅读进度",
-        "description": "设置用户当前读到第几章。进度必须在 [1, 总章节数] 范围内。",
         "operationId": "updateProgress",
         "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "description": "小说 ID",
-            "schema": { "type": "integer", "format": "int64", "example": 1 }
-          }
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } }
         ],
         "requestBody": {
           "required": true,
@@ -199,12 +114,7 @@
                 "type": "object",
                 "required": ["current_chapter"],
                 "properties": {
-                  "current_chapter": {
-                    "type": "integer",
-                    "description": "当前阅读到的章节号",
-                    "minimum": 1,
-                    "example": 500
-                  }
+                  "current_chapter": { "type": "integer", "minimum": 1, "example": 500 }
                 }
               }
             }
@@ -212,24 +122,16 @@
         },
         "responses": {
           "200": {
-            "description": "更新成功",
+            "description": "进度已更新",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "message": { "type": "string", "example": "进度已更新" },
-                    "current_chapter": { "type": "integer", "example": 500 }
+                    "message": { "type": "string" },
+                    "current_chapter": { "type": "integer" }
                   }
                 }
-              }
-            }
-          },
-          "400": {
-            "description": "参数无效（章节超出范围等）",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/Error" }
               }
             }
           }
@@ -239,28 +141,20 @@
     "/api/novels/{id}/parse": {
       "post": {
         "tags": ["AI 解析"],
-        "summary": "触发 AI 解析",
-        "description": "对未解析的章节启动后台 AI 总结和人物/事件提取。每次并发处理 3 章，异步执行。",
+        "summary": "触发 AI 解析（总结 + embedding）",
+        "description": "异步批量处理：先 AI 总结 → 生成 embedding 向量 → 存入 pgvector。并发 3 章。",
         "operationId": "triggerParse",
         "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "description": "小说 ID",
-            "schema": { "type": "integer", "format": "int64", "example": 1 }
-          }
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } }
         ],
         "responses": {
           "200": {
-            "description": "解析已触发",
+            "description": "解析已开始",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "properties": {
-                    "message": { "type": "string", "example": "AI 解析已开始" }
-                  }
+                  "properties": { "message": { "type": "string" } }
                 }
               }
             }
@@ -271,49 +165,23 @@
     "/api/novels/{id}/recap": {
       "post": {
         "tags": ["阅读回顾"],
-        "summary": "生成阅读恢复回顾",
-        "description": "根据用户当前阅读进度，生成无剧透阅读恢复回顾。包含 30 秒速览版和 3 分钟详细版。\n\n**核心规则：** 只使用第 1 章到当前进度章节的数据，绝不涉及后续内容。\n\n结果会缓存，进度不变时重复调用不会消耗 API 额度。",
+        "summary": "生成阅读恢复回顾（RAG 增强版）",
+        "description": "使用 pgvector 语义检索最相关章节（而非简单取最近 N 章），生成无剧透回顾。30s 版 + 3min 版。",
         "operationId": "generateRecap",
         "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "description": "小说 ID",
-            "schema": { "type": "integer", "format": "int64", "example": 1 }
-          }
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } }
         ],
         "responses": {
           "200": {
-            "description": "回顾内容",
+            "description": "回顾内容（Markdown）",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "recap": {
-                      "type": "string",
-                      "description": "Markdown 格式的回顾内容",
-                      "example": "### 📖 30 秒速览版\n主角韩立当前是筑基期修士，正在乱星海寻找突破金丹的机缘...\n\n### 📚 3 分钟详细版\n..."
-                    }
+                    "recap": { "type": "string", "description": "Markdown 格式回顾" }
                   }
                 }
-              }
-            }
-          },
-          "400": {
-            "description": "无效的小说 ID 或未设置进度",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/Error" }
-              }
-            }
-          },
-          "500": {
-            "description": "AI 调用失败",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/Error" }
               }
             }
           }
@@ -321,17 +189,10 @@
       },
       "get": {
         "tags": ["阅读回顾"],
-        "summary": "获取缓存的回顾",
-        "description": "获取之前生成的回顾（不调用 AI，直接读缓存）。按当前阅读进度匹配。",
+        "summary": "获取缓存回顾",
         "operationId": "getRecap",
         "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "description": "小说 ID",
-            "schema": { "type": "integer", "format": "int64", "example": 1 }
-          }
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } }
         ],
         "responses": {
           "200": {
@@ -341,20 +202,87 @@
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "recap": {
-                      "type": "string",
-                      "description": "Markdown 格式的回顾内容"
-                    }
+                    "recap": { "type": "string" }
                   }
                 }
               }
             }
-          },
-          "404": {
-            "description": "暂无缓存，需先生成",
+          }
+        }
+      }
+    },
+    "/api/novels/{id}/ask": {
+      "post": {
+        "tags": ["RAG 检索"],
+        "summary": "无剧透智能问答",
+        "description": "用户提问 → 问题 Embedding → pgvector 语义检索 → LLM 生成无剧透答案。",
+        "operationId": "askQuestion",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["question"],
+                "properties": {
+                  "question": { "type": "string", "description": "用户问题", "example": "主角现在什么境界？" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "AI 无剧透回答",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/Error" }
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "question": { "type": "string" },
+                    "answer": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/novels/{id}/search": {
+      "get": {
+        "tags": ["RAG 检索"],
+        "summary": "语义搜索章节",
+        "description": "基于 pgvector 余弦相似度搜索相关章节。自动按阅读进度过滤。",
+        "operationId": "searchChapters",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } },
+          { "name": "q", "in": "query", "required": true, "description": "搜索关键词", "schema": { "type": "string", "example": "掌天瓶" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "搜索结果",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "query": { "type": "string" },
+                    "results": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "chapter": { "$ref": "#/components/schemas/Chapter" },
+                          "score": { "type": "number", "description": "相似度 (0~1)" }
+                        }
+                      }
+                    }
+                  }
+                }
               }
             }
           }
@@ -366,83 +294,56 @@
     "schemas": {
       "Novel": {
         "type": "object",
-        "description": "小说基本信息",
         "properties": {
-          "id": { "type": "integer", "format": "int64", "example": 1 },
-          "title": { "type": "string", "description": "小说标题", "example": "凡人修仙传" },
-          "author": { "type": "string", "description": "作者", "example": "忘语" },
-          "total_chapters": { "type": "integer", "description": "总章节数", "example": 1500 },
-          "created_at": { "type": "string", "format": "date-time", "description": "上传时间" },
-          "updated_at": { "type": "string", "format": "date-time", "description": "最后更新时间" }
+          "id": { "type": "integer", "format": "int64" },
+          "title": { "type": "string", "example": "凡人修仙传" },
+          "total_chapters": { "type": "integer" },
+          "created_at": { "type": "string", "format": "date-time" }
         }
       },
       "Chapter": {
         "type": "object",
-        "description": "章节信息",
         "properties": {
           "id": { "type": "integer", "format": "int64" },
           "novel_id": { "type": "integer", "format": "int64" },
-          "chapter_number": { "type": "integer", "description": "章节号", "example": 500 },
-          "title": { "type": "string", "description": "章节标题（从 TXT 解析得到）", "example": "第500章 乱星海" },
-          "content": { "type": "string", "description": "章节正文（最多 5000 字）" },
-          "summary": { "type": "string", "description": "AI 生成的章节摘要。为空表示未解析。" },
-          "characters": {
-            "type": "array",
-            "description": "AI 提取的人物列表",
-            "items": { "$ref": "#/components/schemas/CharacterInfo" }
-          },
-          "events": {
-            "type": "array",
-            "description": "AI 提取的事件列表",
-            "items": { "$ref": "#/components/schemas/EventInfo" }
-          },
-          "created_at": { "type": "string", "format": "date-time" }
+          "chapter_number": { "type": "integer" },
+          "title": { "type": "string" },
+          "summary": { "type": "string", "description": "AI 生成摘要（空=未解析）" },
+          "characters": { "type": "array", "items": { "$ref": "#/components/schemas/CharacterInfo" } },
+          "events": { "type": "array", "items": { "$ref": "#/components/schemas/EventInfo" } }
         }
       },
       "CharacterInfo": {
         "type": "object",
-        "description": "人物信息",
         "properties": {
-          "name": { "type": "string", "description": "人物姓名", "example": "韩立" },
-          "aliases": {
-            "type": "array",
-            "items": { "type": "string" },
-            "description": "别名/称号",
-            "example": ["韩跑跑", "厉飞雨"]
-          },
-          "status": { "type": "string", "description": "当前状态/境界", "example": "筑基期修士" },
-          "first_appearance": { "type": "integer", "description": "首次出场章节", "example": 1 }
+          "name": { "type": "string" },
+          "aliases": { "type": "array", "items": { "type": "string" } },
+          "status": { "type": "string" },
+          "first_appearance": { "type": "integer" }
         }
       },
       "EventInfo": {
         "type": "object",
-        "description": "事件信息",
         "properties": {
-          "title": { "type": "string", "description": "事件名称", "example": "获得掌天瓶" },
-          "participants": {
-            "type": "array",
-            "items": { "type": "string" },
-            "description": "参与人物"
-          },
-          "summary": { "type": "string", "description": "事件简述" },
-          "impact": { "type": "string", "description": "事件影响", "example": "开启修仙之路" },
-          "chapter_num": { "type": "integer", "description": "发生章节", "example": 7 }
+          "title": { "type": "string" },
+          "participants": { "type": "array", "items": { "type": "string" } },
+          "summary": { "type": "string" },
+          "impact": { "type": "string" },
+          "chapter_num": { "type": "integer" }
         }
       },
       "ReadingProgress": {
         "type": "object",
-        "description": "阅读进度",
         "properties": {
           "id": { "type": "integer", "format": "int64" },
           "novel_id": { "type": "integer", "format": "int64" },
-          "current_chapter": { "type": "integer", "description": "当前阅读章节", "example": 500 },
-          "updated_at": { "type": "string", "format": "date-time", "description": "最后更新进度时间" }
+          "current_chapter": { "type": "integer" }
         }
       },
       "Error": {
         "type": "object",
         "properties": {
-          "error": { "type": "string", "description": "错误信息" }
+          "error": { "type": "string" }
         }
       }
     }

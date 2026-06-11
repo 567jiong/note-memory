@@ -7,15 +7,19 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
 // Client wraps the OpenAI-compatible API.
 type Client struct {
-	apiKey  string
-	baseURL string
-	model   string
-	http    *http.Client
+	apiKey           string
+	baseURL          string
+	embeddingAPIKey  string // separate key for embeddings, falls back to apiKey
+	embeddingBaseURL string // separate endpoint for embeddings, falls back to baseURL
+	model            string
+	embeddingModel   string
+	http             *http.Client
 }
 
 // Message represents a chat message.
@@ -46,11 +50,24 @@ type ChatResponse struct {
 }
 
 // NewClient creates a new OpenAI-compatible client.
-func NewClient(apiKey, baseURL, model string) *Client {
+// embeddingBaseURL/embeddingAPIKey are optional — if empty, baseURL/apiKey are used for embeddings too.
+// embeddingModel is optional — if empty, defaults to "text-embedding-3-small".
+func NewClient(apiKey, baseURL, model, embeddingAPIKey, embeddingBaseURL, embeddingModel string) *Client {
+	baseURL = strings.TrimSuffix(baseURL, "/")
+	embeddingBaseURL = strings.TrimSuffix(embeddingBaseURL, "/")
+	if embeddingAPIKey == "" {
+		embeddingAPIKey = apiKey
+	}
+	if embeddingModel == "" {
+		embeddingModel = "text-embedding-3-small"
+	}
 	return &Client{
-		apiKey:  apiKey,
-		baseURL: baseURL,
-		model:   model,
+		apiKey:           apiKey,
+		baseURL:          baseURL,
+		embeddingAPIKey:  embeddingAPIKey,
+		embeddingBaseURL: embeddingBaseURL,
+		model:            model,
+		embeddingModel:   embeddingModel,
 		http: &http.Client{
 			Timeout: 120 * time.Second,
 		},
@@ -91,7 +108,7 @@ func (c *Client) Chat(ctx context.Context, messages []Message, temperature float
 	}
 
 	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBytes))
+		return "", fmt.Errorf("API error (status %d) from %s: %s", resp.StatusCode, url, string(respBytes))
 	}
 
 	var chatResp ChatResponse

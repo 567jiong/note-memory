@@ -1,14 +1,18 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"mime/multipart"
+	"note-memory/internal/ai"
 	"note-memory/internal/model"
 	"note-memory/internal/parser"
 	"note-memory/internal/repository"
 
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/transform"
 	"gorm.io/gorm"
 )
 
@@ -17,6 +21,7 @@ type NovelService struct {
 	chapterRepo  *repository.ChapterRepo
 	progressRepo *repository.ProgressRepo
 	chapterSvc   *ChapterService
+	aiClient     *ai.Client
 }
 
 func NewNovelService(
@@ -25,12 +30,14 @@ func NewNovelService(
 	chapterRepo *repository.ChapterRepo,
 	progressRepo *repository.ProgressRepo,
 	chapterSvc *ChapterService,
+	aiClient *ai.Client,
 ) *NovelService {
 	return &NovelService{
 		novelRepo:    novelRepo,
 		chapterRepo:  chapterRepo,
 		progressRepo: progressRepo,
 		chapterSvc:   chapterSvc,
+		aiClient:     aiClient,
 	}
 }
 
@@ -46,11 +53,13 @@ func (s *NovelService) Upload(ctx context.Context, file multipart.File, filename
 	if err != nil {
 		return nil, fmt.Errorf("read file: %w", err)
 	}
-	content := string(contentBytes)
 
-	title := parser.DetectNovelTitle(content)
-	if title == "未命名小说" && filename != "" {
-		// Use filename without extension as fallback
+	// Auto-detect GBK encoding (common in Chinese novels) and convert to UTF-8
+	content := detectAndDecode(contentBytes)
+
+	// LLM-first meta extraction with regex fallback
+	title, author := llmExtractMeta(ctx, s.aiClient, content)
+	if title == "" && filename != "" {
 		name := filename
 		for i := len(name) - 1; i >= 0; i-- {
 			if name[i] == '.' {
@@ -67,6 +76,7 @@ func (s *NovelService) Upload(ctx context.Context, file multipart.File, filename
 
 	novel := &model.Novel{
 		Title:         title,
+		Author:        author,
 		TotalChapters: len(parsedChapters),
 	}
 	if err := s.novelRepo.Create(novel); err != nil {
@@ -83,7 +93,7 @@ func (s *NovelService) Upload(ctx context.Context, file multipart.File, filename
 			NovelID:       novel.ID,
 			ChapterNumber: pc.Number,
 			Title:         pc.Title,
-			Content:       truncateContent(pc.Content, 5000), // Store up to 5k chars per chapter
+			Content:       truncateContent(pc.Content, 50000), // Store up to 50k chars per chapter
 		})
 	}
 
@@ -141,6 +151,70 @@ func (s *NovelService) GetProgress(novelID int64) (*model.ReadingProgress, error
 // StartParse triggers async AI parsing for all unprocessed chapters.
 func (s *NovelService) StartParse(novelID int64) {
 	go s.chapterSvc.ParseAllChapters(context.Background(), novelID)
+}
+
+// FillEmbeddings triggers async embedding generation from chapter content.
+func (s *NovelService) FillEmbeddings(novelID int64) {
+	go s.chapterSvc.FillEmbeddings(context.Background(), novelID)
+}
+
+// detectAndDecode auto-detects GBK/GB18030 encoding and converts to UTF-8.
+// Chinese novel TXT files are predominantly GBK-encoded.
+func detectAndDecode(data []byte) string {
+	// If already valid UTF-8, return as-is
+	if utf8Valid(data) {
+		return string(data)
+	}
+	// Try GBK → UTF-8
+	reader := transform.NewReader(bytes.NewReader(data), simplifiedchinese.GBK.NewDecoder())
+	decoded, err := io.ReadAll(reader)
+	if err != nil {
+		// Fallback: treat as raw bytes
+		return string(data)
+	}
+	return string(decoded)
+}
+
+func utf8Valid(data []byte) bool {
+	for i := 0; i < len(data); {
+		r, size := decodeRune(data[i:])
+		if r == 0xFFFD && size == 1 {
+			return false
+		}
+		if size == 0 {
+			return false
+		}
+		i += size
+	}
+	return true
+}
+
+func decodeRune(b []byte) (rune, int) {
+	if len(b) == 0 {
+		return 0, 0
+	}
+	if b[0] < 0x80 {
+		return rune(b[0]), 1
+	}
+	if b[0] < 0xC0 {
+		return 0xFFFD, 1
+	}
+	if len(b) < 2 {
+		return 0xFFFD, 0
+	}
+	if b[0] < 0xE0 {
+		return rune(b[0]&0x1F)<<6 | rune(b[1]&0x3F), 2
+	}
+	if len(b) < 3 {
+		return 0xFFFD, 0
+	}
+	if b[0] < 0xF0 {
+		return rune(b[0]&0x0F)<<12 | rune(b[1]&0x3F)<<6 | rune(b[2]&0x3F), 3
+	}
+	if len(b) < 4 {
+		return 0xFFFD, 0
+	}
+	return rune(b[0]&0x07)<<18 | rune(b[1]&0x3F)<<12 | rune(b[2]&0x3F)<<6 | rune(b[3]&0x3F), 4
 }
 
 func truncateContent(content string, maxLen int) string {
