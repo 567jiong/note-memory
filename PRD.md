@@ -221,30 +221,39 @@ MVP方案
 * Go 1.22+
 * Gin Web Framework
 * PostgreSQL + GORM
-* OpenAI 兼容 API（支持 OpenAI / DeepSeek 等）
+* OpenAI 兼容 API（Chat 用 DeepSeek / Embedding 用硅基流动，可独立配置地址和 Key）
 * Go html/template + Tailwind CSS CDN
 
 项目结构：
 ```
 note-memory/
-├── cmd/server/main.go         # 应用入口
+├── cmd/server/main.go         # 应用入口 + 原始 SQL 迁移
 ├── internal/
-│   ├── config/config.go       # 环境变量配置
-│   ├── model/models.go        # GORM 数据模型
+│   ├── config/config.go       # 环境变量配置（含独立 Embedding 配置）
+│   ├── model/models.go        # GORM 数据模型（Novel/Chapter/EntityAlias/...）
 │   ├── parser/chapter.go      # TXT 章节解析器
 │   ├── repository/            # 数据访问层
 │   │   ├── novel.go
-│   │   ├── chapter.go
+│   │   ├── chapter.go         # 含 HybridSearch / FullTextSearch / 别名管理
 │   │   ├── progress.go
 │   │   └── recap.go
 │   ├── service/               # 业务逻辑层
 │   │   ├── novel.go           # 小说上传/管理
-│   │   ├── chapter.go         # AI 章节总结
-│   │   └── recap.go           # 回顾生成
-│   ├── ai/openai.go           # OpenAI 客户端
+│   │   ├── chapter.go         # AI 章节总结 + FillEmbeddings
+│   │   ├── recap.go           # 回顾生成
+│   │   ├── rag.go             # 语义检索 + 上下文构建
+│   │   ├── search.go          # 混合检索（jieba分词 + 向量 + 全文 + 别名扩展 + 噪声过滤）
+│   │   ├── qa.go              # 无剧透问答
+│   │   └── metallm.go         # 元数据 LLM 提取
+│   ├── ai/
+│   │   ├── openai.go          # Chat API 客户端
+│   │   └── embedding.go       # Embedding API 客户端（独立 baseURL/APIKey）
 │   ├── handler/novel.go       # HTTP 处理器
 │   └── middleware/cors.go     # CORS
-├── migrations/001_init.sql    # 数据库初始化
+├── migrations/
+│   ├── 001_init.sql           # 核心表
+│   ├── 002_pgvector.sql       # pgvector 扩展 + embedding 列(1024维)
+│   └── 003_search.sql         # 全文检索 + entity_aliases 别名表
 ├── web/templates/             # 前端模板
 │   ├── layout.html
 │   ├── index.html
@@ -261,9 +270,12 @@ API 设计：
 | GET | /api/novels | 获取小说列表 |
 | GET | /api/novels/:id | 获取小说详情 |
 | PUT | /api/novels/:id/progress | 更新阅读进度 |
-| POST | /api/novels/:id/parse | 触发 AI 解析 |
+| POST | /api/novels/:id/parse | 触发 AI 解析（摘要 + embedding + 全文索引 + 别名）|
+| POST | /api/novels/:id/embed | 回填 embedding（从章节内容截断 ≤400 字，不调 LLM）|
 | POST | /api/novels/:id/recap | 生成回顾 |
 | GET | /api/novels/:id/recap | 获取回顾 |
+| POST | /api/novels/:id/ask | 无剧透智能问答 |
+| GET | /api/novels/:id/search?q= | 混合搜索（语义 + 全文 + 别名扩展）|
 
 无剧透保障机制：
 * 数据库查询严格过滤 chapter_number <= current_progress
@@ -273,20 +285,21 @@ API 设计：
 第二阶段（已完成 ✅ — 2026-06-11）
 
 增加：
-* ✅ pgvector 向量存储：章节摘要 → embedding (1536维) → 余弦相似度检索
-* ✅ 无剧透智能问答：POST /api/novels/:id/ask，基于 RAG 语义检索 + 进度感知
+* ✅ pgvector 向量存储：章节内容 → BAAI/bge-large-zh-v1.5 embedding (1024维) → 余弦相似度检索
+* ✅ 混合检索（Hybrid Search）：语义向量 + 全文检索(tsvector) + 人名别名扩展，embedding 不可用时自动降级纯全文
+* ✅ jieba 中文分词 + 自定义词典（从角色别名自动构建）+ bigram 回退
+* ✅ entity_aliases 别名映射表：角色名/别名 → 搜索时自动扩展查询
+* ✅ 实体噪声过滤：自动拦截"黄脸修士""中年儒生""师兄"等外貌描述/泛称
+* ✅ 无剧透智能问答：POST /api/novels/:id/ask，混合检索 + 进度感知，无 embedding 时降级全文
 * ✅ RAG 升级回顾生成：从"最近 N 章"改为语义检索最相关章节
-* ✅ 语义搜索：GET /api/novels/:id/search?q=关键词
 * ✅ Agentic RAG：检索 → LLM 验证 → 改写查询 → 重新检索 → 生成
+* ✅ 独立 Embedding API 配置：支持 Chat 和 Embedding 使用不同 API（如 DeepSeek Chat + 硅基流动 Embedding）
 * ✅ Web UI 聊天面板 + 搜索框
 
 待后续：
 * 人物关系图（知识图谱可视化）
 * 事件时间线（交互式时间线浏览）
 * 人物卡片/状态变化追踪
-
-实际开发时间：
-AI辅助开发：约 2 小时（10 个任务全部完成）
 
 第三阶段（商业化）
 

@@ -1,9 +1,9 @@
 {
   "openapi": "3.0.3",
   "info": {
-    "title": "阅读记忆助手 API (Phase 2 — RAG)",
-    "description": "Reading Memory Agent — 基于 pgvector + RAG 的智能阅读记忆恢复。核心功能：上传 TXT → AI 章节总结 + embedding 向量化 → 语义检索 → 无剧透回顾/问答。",
-    "version": "2.0.0"
+    "title": "阅读记忆助手 API (Phase 2 — RAG + Hybrid Search)",
+    "description": "Reading Memory Agent — 基于 pgvector(1024维) + tsvector 全文检索的混合搜索。核心：上传 TXT → AI 章节总结 → embedding 向量化 + 全文索引 → 混合检索 → 无剧透回顾/问答。支持 Chat 和 Embedding 独立 API 配置。",
+    "version": "2.1.0"
   },
   "servers": [{ "url": "http://localhost:8080", "description": "本地开发" }],
   "tags": [
@@ -35,7 +35,7 @@
         },
         "responses": {
           "200": {
-            "description": "上传成功，后台自动触发 AI 解析",
+            "description": "上传成功，后台自动触发 AI 解析（总结 + embedding + 全文索引 + 别名）",
             "content": {
               "application/json": {
                 "schema": {
@@ -141,8 +141,8 @@
     "/api/novels/{id}/parse": {
       "post": {
         "tags": ["AI 解析"],
-        "summary": "触发 AI 解析（总结 + embedding）",
-        "description": "异步批量处理：先 AI 总结 → 生成 embedding 向量 → 存入 pgvector。并发 3 章。",
+        "summary": "触发 AI 解析（总结 + embedding + 全文索引 + 别名）",
+        "description": "异步批量处理：AI 总结 → 生成 embedding(1024维) → 全文索引(tsvector+分词) → 角色别名写入。并发 3 章。",
         "operationId": "triggerParse",
         "parameters": [
           { "name": "id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } }
@@ -162,11 +162,35 @@
         }
       }
     },
+    "/api/novels/{id}/embed": {
+      "post": {
+        "tags": ["AI 解析"],
+        "summary": "回填空 embedding 字段（从章节内容，不调 LLM）",
+        "description": "遍历所有 embedding IS NULL 的章节，取内容截断至 ≤400 字（适配 512 token 限制），直接调用 Embedding API 生成向量。不消耗 Chat API 额度。并发 3 章。",
+        "operationId": "triggerFillEmbeddings",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "回填已开始",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "message": { "type": "string", "example": "Embedding 回填已开始（使用章节内容，≤400字截断）" } }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/novels/{id}/recap": {
       "post": {
         "tags": ["阅读回顾"],
         "summary": "生成阅读恢复回顾（RAG 增强版）",
-        "description": "使用 pgvector 语义检索最相关章节（而非简单取最近 N 章），生成无剧透回顾。30s 版 + 3min 版。",
+        "description": "使用混合检索（语义 + 全文 + 别名扩展）检索最相关章节，生成无剧透回顾。30s 版 + 3min 版。",
         "operationId": "generateRecap",
         "parameters": [
           { "name": "id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } }
@@ -215,7 +239,7 @@
       "post": {
         "tags": ["RAG 检索"],
         "summary": "无剧透智能问答",
-        "description": "用户提问 → 问题 Embedding → pgvector 语义检索 → LLM 生成无剧透答案。",
+        "description": "用户提问 → 别名扩展 → 混合检索（语义 + 全文） → LLM 生成无剧透答案。Embedding 不可用时自动降级为纯全文检索。",
         "operationId": "askQuestion",
         "parameters": [
           { "name": "id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } }
@@ -255,8 +279,8 @@
     "/api/novels/{id}/search": {
       "get": {
         "tags": ["RAG 检索"],
-        "summary": "语义搜索章节",
-        "description": "基于 pgvector 余弦相似度搜索相关章节。自动按阅读进度过滤。",
+        "summary": "混合搜索章节（语义 + 全文 + 别名扩展）",
+        "description": "加权融合 pgvector 语义搜索(0.7) 和 tsvector 全文搜索(0.3)。自动扩展角色别名。Embedding 不可用时降级为纯全文检索。",
         "operationId": "searchChapters",
         "parameters": [
           { "name": "id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } },
@@ -264,20 +288,23 @@
         ],
         "responses": {
           "200": {
-            "description": "搜索结果",
+            "description": "搜索结果。mode=hybrid 时含语义分+全文分，mode=text_only 时仅全文分。",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "properties": {
                     "query": { "type": "string" },
+                    "mode": { "type": "string", "enum": ["hybrid", "text_only"], "description": "hybrid=语义+全文 / text_only=仅全文降级" },
                     "results": {
                       "type": "array",
                       "items": {
                         "type": "object",
                         "properties": {
                           "chapter": { "$ref": "#/components/schemas/Chapter" },
-                          "score": { "type": "number", "description": "相似度 (0~1)" }
+                          "semantic_score": { "type": "number", "description": "向量相似度 (0~1)，text_only 模式下为 0" },
+                          "text_score": { "type": "number", "description": "全文匹配分" },
+                          "final_score": { "type": "number", "description": "加权最终分 (semantic*0.7 + text*0.3)" }
                         }
                       }
                     }
