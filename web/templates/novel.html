@@ -1,0 +1,138 @@
+{{ define "novel.html" }}
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>小说详情</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50 min-h-screen">
+<header class="bg-white shadow-sm border-b">
+    <div class="max-w-4xl mx-auto px-4 py-4 flex items-center justify-between">
+        <a href="/" class="text-xl font-bold text-gray-800">📚 阅读记忆助手</a>
+        <span class="text-sm text-gray-500">Reading Memory Agent</span>
+    </div>
+</header>
+<main class="max-w-4xl mx-auto px-4 py-8">
+
+<div class="space-y-6">
+    <a href="/" class="text-blue-600 hover:underline text-sm">← 返回列表</a>
+
+    <div id="novel-detail" class="bg-white rounded-lg shadow p-6">
+        <div class="animate-pulse space-y-4">
+            <div class="h-6 bg-gray-200 rounded w-1/3"></div>
+            <div class="h-4 bg-gray-200 rounded w-1/4"></div>
+        </div>
+    </div>
+
+    <div id="progress-section" class="bg-white rounded-lg shadow p-6 hidden">
+        <h2 class="text-lg font-semibold mb-4">📍 阅读进度</h2>
+        <div class="flex items-center gap-4">
+            <span class="text-gray-600">当前读到：</span>
+            <input type="number" id="progress-input" min="1" class="border rounded px-3 py-2 w-24 text-center" value="1">
+            <span class="text-gray-400">章</span>
+            <button onclick="updateProgress()" class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition text-sm">更新进度</button>
+        </div>
+        <p id="progress-feedback" class="text-sm mt-2 hidden"></p>
+    </div>
+
+    <div id="actions-section" class="bg-white rounded-lg shadow p-6 hidden">
+        <h2 class="text-lg font-semibold mb-4">🔧 操作</h2>
+        <div class="flex flex-wrap gap-3">
+            <button onclick="generateRecap()" id="recap-btn" class="bg-purple-600 text-white px-5 py-2 rounded-lg hover:bg-purple-700 transition">✨ 生成阅读回顾</button>
+            <button onclick="triggerParse()" class="bg-gray-600 text-white px-5 py-2 rounded-lg hover:bg-gray-700 transition text-sm">🔄 重新 AI 解析</button>
+        </div>
+        <div id="recap-status" class="mt-4 hidden"></div>
+    </div>
+
+    <div id="chapters-section" class="bg-white rounded-lg shadow p-6 hidden">
+        <h2 class="text-lg font-semibold mb-4">📑 章节列表</h2>
+        <div id="chapter-list" class="space-y-2 max-h-96 overflow-y-auto"></div>
+    </div>
+</div>
+
+</main>
+<footer class="text-center text-gray-400 text-sm py-8">Reading Memory Agent MVP — 帮你快速恢复阅读状态</footer>
+<script>
+var novelId = window.location.pathname.split('/').filter(Boolean)[1];
+
+async function loadNovel() {
+    try {
+        var resp = await fetch('/api/novels/' + novelId);
+        var data = await resp.json();
+        if (!resp.ok) { alert(data.error); window.location.href = '/'; return; }
+
+        document.getElementById('novel-detail').innerHTML =
+            '<h1 class="text-2xl font-bold">' + escapeHtml(data.novel.title) + '</h1>' +
+            '<p class="text-gray-500 mt-2">共 ' + data.novel.total_chapters + ' 章</p>';
+
+        document.getElementById('progress-section').classList.remove('hidden');
+        document.getElementById('progress-input').max = data.novel.total_chapters;
+        if (data.progress) document.getElementById('progress-input').value = data.progress.current_chapter;
+
+        document.getElementById('actions-section').classList.remove('hidden');
+
+        document.getElementById('chapters-section').classList.remove('hidden');
+        document.getElementById('chapter-list').innerHTML = data.chapters.map(function(ch) {
+            var color = ch.summary ? 'bg-green-50' : 'bg-gray-50';
+            var badge = ch.summary ? '<span class="text-xs text-green-600">✓ 已解析</span>' : '<span class="text-xs text-gray-400">○ 未解析</span>';
+            return '<div class="flex items-center justify-between p-2 rounded ' + color + '">' +
+                '<span class="text-sm">第' + ch.chapter_number + '章 ' + escapeHtml(ch.title) + '</span>' + badge + '</div>';
+        }).join('');
+    } catch (err) { console.error(err); }
+}
+
+async function updateProgress() {
+    var ch = parseInt(document.getElementById('progress-input').value);
+    if (!ch || ch < 1) return;
+    try {
+        var resp = await fetch('/api/novels/' + novelId + '/progress', {
+            method: 'PUT', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({current_chapter: ch})
+        });
+        var data = await resp.json();
+        var fb = document.getElementById('progress-feedback');
+        fb.classList.remove('hidden');
+        fb.className = 'text-sm mt-2 ' + (resp.ok ? 'text-green-600' : 'text-red-600');
+        fb.textContent = resp.ok ? '✅ 进度已更新' : '❌ ' + data.error;
+    } catch (err) { console.error(err); }
+}
+
+async function generateRecap() {
+    var btn = document.getElementById('recap-btn');
+    var st = document.getElementById('recap-status');
+    btn.disabled = true; btn.textContent = '⏳ 正在生成...';
+    st.classList.remove('hidden');
+    st.className = 'mt-4 p-3 bg-blue-50 text-blue-700 rounded-lg';
+    st.textContent = 'AI 正在生成回顾，请稍候...';
+    try {
+        var resp = await fetch('/api/novels/' + novelId + '/recap', { method: 'POST' });
+        var data = await resp.json();
+        if (resp.ok) {
+            window.location.href = '/novels/' + novelId + '/recap';
+        } else {
+            st.className = 'mt-4 p-3 bg-red-50 text-red-700 rounded-lg';
+            st.textContent = '❌ ' + (data.error || '生成失败');
+        }
+    } catch (err) {
+        st.className = 'mt-4 p-3 bg-red-50 text-red-700 rounded-lg';
+        st.textContent = '❌ 网络错误: ' + err.message;
+    }
+    btn.disabled = false; btn.textContent = '✨ 生成阅读回顾';
+}
+
+async function triggerParse() {
+    try {
+        await fetch('/api/novels/' + novelId + '/parse', { method: 'POST' });
+        alert('AI 解析已开始，请稍后刷新页面查看结果');
+    } catch (err) { alert('触发失败: ' + err.message); }
+}
+
+function escapeHtml(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+loadNovel();
+</script>
+</body>
+</html>
+{{ end }}

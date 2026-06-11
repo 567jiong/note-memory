@@ -1,0 +1,86 @@
+{{ define "recap.html" }}
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>阅读恢复回顾</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50 min-h-screen">
+<header class="bg-white shadow-sm border-b">
+    <div class="max-w-4xl mx-auto px-4 py-4 flex items-center justify-between">
+        <a href="/" class="text-xl font-bold text-gray-800">📚 阅读记忆助手</a>
+        <span class="text-sm text-gray-500">Reading Memory Agent</span>
+    </div>
+</header>
+<main class="max-w-4xl mx-auto px-4 py-8">
+
+<div class="space-y-6">
+    <a href="/" class="text-blue-600 hover:underline text-sm" id="back-link">← 返回小说详情</a>
+
+    <div id="recap-content" class="bg-white rounded-lg shadow p-6">
+        <div class="animate-pulse space-y-4">
+            <div class="h-6 bg-gray-200 rounded w-1/3"></div>
+            <div class="h-4 bg-gray-200 rounded w-full"></div>
+            <div class="h-4 bg-gray-200 rounded w-5/6"></div>
+        </div>
+    </div>
+
+    <div class="bg-white rounded-lg shadow p-6 hidden" id="actions">
+        <button onclick="regenerateRecap()" class="bg-purple-600 text-white px-5 py-2 rounded-lg hover:bg-purple-700 transition">🔄 重新生成</button>
+        <span class="text-sm text-gray-400 ml-3">进度变化后重新生成以获得最新回顾</span>
+    </div>
+</div>
+
+</main>
+<footer class="text-center text-gray-400 text-sm py-8">Reading Memory Agent MVP — 帮你快速恢复阅读状态</footer>
+<script>
+var novelId = window.location.pathname.split('/').filter(Boolean)[1];
+document.getElementById('back-link').href = '/novels/' + novelId;
+
+async function loadRecap() {
+    try {
+        var resp = await fetch('/api/novels/' + novelId + '/recap');
+        var data = await resp.json();
+        var container = document.getElementById('recap-content');
+        if (resp.ok && data.recap) {
+            var html = data.recap
+                .replace(/### /g, '<h3 class="text-lg font-bold mt-6 mb-3">')
+                .replace(/## /g, '<h2 class="text-xl font-bold mt-6 mb-3">')
+                .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+                .replace(/\n/g, '<br>');
+            container.innerHTML = '<h1 class="text-2xl font-bold mb-4">📖 阅读恢复回顾</h1>' +
+                '<div class="prose max-w-none">' + html + '</div>';
+            document.getElementById('actions').classList.remove('hidden');
+        } else if (resp.status === 404) {
+            container.innerHTML = '<div class="text-center py-8">' +
+                '<p class="text-gray-400 text-lg mb-4">📭 暂无回顾</p>' +
+                '<p class="text-gray-500 mb-4">请先返回小说详情页生成回顾</p>' +
+                '<a href="/novels/' + novelId + '" class="text-blue-600 hover:underline">返回小说详情</a></div>';
+        } else {
+            container.innerHTML = '<p class="text-red-600">❌ ' + (data.error || '加载失败') + '</p>';
+        }
+    } catch (err) {
+        document.getElementById('recap-content').innerHTML = '<p class="text-red-600">❌ 网络错误: ' + err.message + '</p>';
+    }
+}
+
+async function regenerateRecap() {
+    var container = document.getElementById('recap-content');
+    container.innerHTML = '<div class="text-center py-8"><div class="animate-spin h-8 w-8 border-4 border-purple-500 border-t-transparent rounded-full mx-auto mb-4"></div><p class="text-gray-500">AI 正在重新生成回顾...</p></div>';
+    try {
+        var resp = await fetch('/api/novels/' + novelId + '/recap', { method: 'POST' });
+        var data = await resp.json();
+        if (resp.ok) { loadRecap(); }
+        else { container.innerHTML = '<p class="text-red-600">❌ ' + (data.error || '生成失败') + '</p>'; }
+    } catch (err) {
+        container.innerHTML = '<p class="text-red-600">❌ 网络错误: ' + err.message + '</p>';
+    }
+}
+
+loadRecap();
+</script>
+</body>
+</html>
+{{ end }}

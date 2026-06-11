@@ -1,0 +1,140 @@
+package model
+
+import (
+	"database/sql/driver"
+	"encoding/json"
+	"errors"
+	"time"
+)
+
+// Novel represents a novel/book.
+type Novel struct {
+	ID            int64     `json:"id" gorm:"primaryKey;autoIncrement"`
+	Title         string    `json:"title" gorm:"type:varchar(500);not null"`
+	Author        string    `json:"author" gorm:"type:varchar(200);default:''"`
+	TotalChapters int       `json:"total_chapters" gorm:"default:0"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+func (Novel) TableName() string { return "novels" }
+
+// Chapter represents a single chapter in a novel.
+type Chapter struct {
+	ID            int64     `json:"id" gorm:"primaryKey;autoIncrement"`
+	NovelID       int64     `json:"novel_id" gorm:"index:idx_chapters_novel_number"`
+	ChapterNumber int       `json:"chapter_number" gorm:"index:idx_chapters_novel_number"`
+	Title         string    `json:"title" gorm:"type:varchar(500);default:''"`
+	Content       string    `json:"content" gorm:"type:text;not null"`
+	Summary       string    `json:"summary" gorm:"type:text;default:''"`
+	Characters    JSONB     `json:"characters" gorm:"type:jsonb;default:'[]'"`
+	Events        JSONB     `json:"events" gorm:"type:jsonb;default:'[]'"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+func (Chapter) TableName() string { return "chapters" }
+
+// ReadingProgress tracks where the user is in a novel.
+type ReadingProgress struct {
+	ID             int64     `json:"id" gorm:"primaryKey;autoIncrement"`
+	NovelID        int64     `json:"novel_id" gorm:"uniqueIndex"`
+	CurrentChapter int       `json:"current_chapter" gorm:"not null;default:1"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+func (ReadingProgress) TableName() string { return "reading_progress" }
+
+// Recap stores a generated recap for a specific novel + progress point.
+type Recap struct {
+	ID             int64     `json:"id" gorm:"primaryKey;autoIncrement"`
+	NovelID        int64     `json:"novel_id" gorm:"uniqueIndex:idx_recap_novel_chapter"`
+	CurrentChapter int       `json:"current_chapter" gorm:"uniqueIndex:idx_recap_novel_chapter"`
+	RecapContent   string    `json:"recap_content" gorm:"type:text;not null"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+func (Recap) TableName() string { return "recaps" }
+
+// --- Character / Event structs for JSONB serialization ---
+
+type CharacterInfo struct {
+	Name           string   `json:"name"`
+	Aliases        []string `json:"aliases,omitempty"`
+	Status         string   `json:"status,omitempty"`
+	FirstAppearance int     `json:"first_appearance,omitempty"`
+}
+
+type EventInfo struct {
+	Title        string   `json:"title"`
+	Participants []string `json:"participants,omitempty"`
+	Summary      string   `json:"summary,omitempty"`
+	Impact       string   `json:"impact,omitempty"`
+	ChapterNum   int      `json:"chapter_num,omitempty"`
+}
+
+// --- JSONB type for GORM ---
+
+type JSONB []byte
+
+func (j JSONB) Value() (driver.Value, error) {
+	if j == nil {
+		return []byte("[]"), nil
+	}
+	return []byte(j), nil
+}
+
+func (j *JSONB) Scan(value interface{}) error {
+	if value == nil {
+		*j = []byte("[]")
+		return nil
+	}
+	bytes, ok := value.([]byte)
+	if !ok {
+		return errors.New("failed to scan JSONB: type assertion to []byte failed")
+	}
+	*j = make([]byte, len(bytes))
+	copy(*j, bytes)
+	return nil
+}
+
+// MarshalCharacters serializes a slice of CharacterInfo to JSONB.
+func MarshalCharacters(chars []CharacterInfo) (JSONB, error) {
+	b, err := json.Marshal(chars)
+	if err != nil {
+		return nil, err
+	}
+	return JSONB(b), nil
+}
+
+// UnmarshalCharacters deserializes JSONB to a slice of CharacterInfo.
+func UnmarshalCharacters(j JSONB) ([]CharacterInfo, error) {
+	if len(j) == 0 {
+		return []CharacterInfo{}, nil
+	}
+	var chars []CharacterInfo
+	if err := json.Unmarshal(j, &chars); err != nil {
+		return nil, err
+	}
+	return chars, nil
+}
+
+// MarshalEvents serializes a slice of EventInfo to JSONB.
+func MarshalEvents(events []EventInfo) (JSONB, error) {
+	b, err := json.Marshal(events)
+	if err != nil {
+		return nil, err
+	}
+	return JSONB(b), nil
+}
+
+// UnmarshalEvents deserializes JSONB to a slice of EventInfo.
+func UnmarshalEvents(j JSONB) ([]EventInfo, error) {
+	if len(j) == 0 {
+		return []EventInfo{}, nil
+	}
+	var events []EventInfo
+	if err := json.Unmarshal(j, &events); err != nil {
+		return nil, err
+	}
+	return events, nil
+}

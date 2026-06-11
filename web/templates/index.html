@@ -1,0 +1,117 @@
+{{ define "index.html" }}
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>阅读记忆助手 - 首页</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50 min-h-screen">
+<header class="bg-white shadow-sm border-b">
+    <div class="max-w-4xl mx-auto px-4 py-4 flex items-center justify-between">
+        <a href="/" class="text-xl font-bold text-gray-800">📚 阅读记忆助手</a>
+        <span class="text-sm text-gray-500">Reading Memory Agent</span>
+    </div>
+</header>
+<main class="max-w-4xl mx-auto px-4 py-8">
+
+<div class="space-y-8">
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-lg font-semibold mb-4">📤 上传小说</h2>
+        <p class="text-gray-500 text-sm mb-4">支持 TXT 格式，系统会自动识别章节标题并拆分章节。</p>
+        <div class="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center cursor-pointer hover:border-blue-400 transition" id="drop-zone">
+            <input type="file" id="file-input" name="file" accept=".txt" class="hidden">
+            <div id="upload-hint">
+                <p class="text-gray-400 text-lg mb-2">📁</p>
+                <p class="text-gray-500">点击选择 TXT 文件，或拖拽到此处</p>
+                <p class="text-gray-300 text-xs mt-2">测试文件：testdata/test-novel.txt</p>
+            </div>
+            <div id="upload-progress" class="hidden">
+                <div class="animate-spin h-8 w-8 border-4 border-blue-500 border-t-transparent rounded-full mx-auto mb-2"></div>
+                <p class="text-blue-600">正在上传和解析...</p>
+            </div>
+        </div>
+        <div id="upload-result" class="mt-4 hidden"></div>
+    </div>
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-lg font-semibold mb-4">📚 我的小说</h2>
+        <div id="novel-list" class="space-y-3">
+            <p class="text-gray-400 text-center py-8" id="empty-hint">暂无小说，上传一本开始吧！</p>
+        </div>
+    </div>
+</div>
+
+</main>
+<footer class="text-center text-gray-400 text-sm py-8">Reading Memory Agent MVP — 帮你快速恢复阅读状态</footer>
+<script>
+var dropZone = document.getElementById('drop-zone');
+var fileInput = document.getElementById('file-input');
+var uploadHint = document.getElementById('upload-hint');
+var uploadProgress = document.getElementById('upload-progress');
+var uploadResult = document.getElementById('upload-result');
+
+dropZone.addEventListener('click', function() { fileInput.click(); });
+dropZone.addEventListener('dragover', function(e) { e.preventDefault(); dropZone.classList.add('border-blue-400'); });
+dropZone.addEventListener('dragleave', function() { dropZone.classList.remove('border-blue-400'); });
+dropZone.addEventListener('drop', function(e) {
+    e.preventDefault(); dropZone.classList.remove('border-blue-400');
+    if (e.dataTransfer.files.length) { fileInput.files = e.dataTransfer.files; uploadFile(); }
+});
+fileInput.addEventListener('change', uploadFile);
+
+async function uploadFile() {
+    var file = fileInput.files[0];
+    if (!file) return;
+    if (!file.name.endsWith('.txt')) { alert('请选择 TXT 文件'); return; }
+    uploadHint.classList.add('hidden');
+    uploadProgress.classList.remove('hidden');
+    uploadResult.classList.add('hidden');
+    var formData = new FormData();
+    formData.append('file', file);
+    try {
+        var resp = await fetch('/api/novels', { method: 'POST', body: formData });
+        var data = await resp.json();
+        uploadResult.classList.remove('hidden');
+        if (resp.ok) {
+            uploadResult.className = 'mt-4 p-3 bg-green-50 text-green-700 rounded-lg';
+            uploadResult.textContent = '✅ ' + data.message + ' 即将跳转...';
+            loadNovels();
+            setTimeout(function() { window.location.href = '/novels/' + data.novel.id; }, 1500);
+        } else {
+            uploadResult.className = 'mt-4 p-3 bg-red-50 text-red-700 rounded-lg';
+            uploadResult.textContent = '❌ ' + (data.error || '上传失败');
+        }
+    } catch (err) {
+        uploadResult.classList.remove('hidden');
+        uploadResult.className = 'mt-4 p-3 bg-red-50 text-red-700 rounded-lg';
+        uploadResult.textContent = '❌ 网络错误: ' + err.message;
+    }
+    uploadHint.classList.remove('hidden');
+    uploadProgress.classList.add('hidden');
+}
+
+async function loadNovels() {
+    try {
+        var resp = await fetch('/api/novels');
+        var data = await resp.json();
+        var list = document.getElementById('novel-list');
+        var eh = document.getElementById('empty-hint');
+        if (!data.novels || data.novels.length === 0) {
+            eh.classList.remove('hidden'); list.innerHTML = ''; list.appendChild(eh); return;
+        }
+        eh.classList.add('hidden');
+        list.innerHTML = data.novels.map(function(n) {
+            return '<div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition">'+
+            '<div><a href="/novels/'+n.id+'" class="text-blue-600 font-medium hover:underline">'+escapeHtml(n.title)+'</a>'+
+            '<p class="text-sm text-gray-400 mt-1">共 '+n.total_chapters+' 章</p></div>'+
+            '<a href="/novels/'+n.id+'" class="text-gray-400 hover:text-gray-600">查看 →</a></div>';
+        }).join('');
+    } catch (err) { console.error(err); }
+}
+function escapeHtml(s) { var d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
+loadNovels();
+</script>
+</body>
+</html>
+{{ end }}
