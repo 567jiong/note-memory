@@ -6,7 +6,6 @@ import (
 	"note-memory/internal/ai"
 	"note-memory/internal/model"
 	"note-memory/internal/repository"
-	"strings"
 )
 
 // QAService handles spoiler-free question answering.
@@ -38,6 +37,7 @@ func NewQAService(
 }
 
 // AskQuestion answers a user question about the novel, strictly within the spoiler-free boundary.
+// Uses Agentic RAG: multi-step retrieval with LLM verification and query rewriting.
 func (s *QAService) AskQuestion(ctx context.Context, novelID int64, question string) (string, error) {
 	novel, err := s.novelRepo.GetByID(novelID)
 	if err != nil {
@@ -51,12 +51,13 @@ func (s *QAService) AskQuestion(ctx context.Context, novelID int64, question str
 
 	currentChapter := progress.CurrentChapter
 
-	// Hybrid RAG retrieval: semantic + full-text with alias expansion
-	retrievedCtx := s.buildQARetrievalContext(ctx, novel, question, currentChapter)
+	// Agentic RAG: multi-step retrieval → verify → rewrite → re-retrieve
+	result, err := s.ragSvc.AgenticRetrieve(ctx, question, novelID, currentChapter, novel.Title)
+	if err != nil {
+		return "", fmt.Errorf("agentic retrieve: %w", err)
+	}
 
-	// Override the context's title with the actual novel title
-	retrievedCtx = strings.Replace(retrievedCtx, "小说《》", fmt.Sprintf("小说《%s》", novel.Title), 1)
-	retrievedCtx = fmt.Sprintf("小说《%s》\n用户阅读进度：第 %d 章\n%s", novel.Title, currentChapter, retrievedCtx)
+	fmt.Printf("[qa] Agentic RAG: %d iterations, verified=%v\n", result.Iterations, result.Verified)
 
 	sysPrompt := fmt.Sprintf(`你是一个阅读助手，帮助用户回忆小说《%s》的剧情。
 
@@ -67,7 +68,7 @@ func (s *QAService) AskQuestion(ctx context.Context, novelID int64, question str
 - 回答要简洁、准确
 
 ## 上下文信息
-%s`, novel.Title, currentChapter, currentChapter+1, retrievedCtx)
+%s`, novel.Title, currentChapter, currentChapter+1, result.Context)
 
 	userPrompt := fmt.Sprintf("用户提问：%s\n\n请根据上下文回答。如果信息不足，请明确说明。", question)
 
@@ -83,6 +84,7 @@ func (s *QAService) AskQuestion(ctx context.Context, novelID int64, question str
 }
 
 // SearchChapters performs semantic search and returns formatted results.
+// Note: this is the non-agentic fast path for the search endpoint.
 func (s *QAService) SearchChapters(ctx context.Context, novelID int64, query string) ([]model.Chapter, []float64, error) {
 	progress, err := s.progressRepo.GetByNovel(novelID)
 	if err != nil {
@@ -101,28 +103,4 @@ func (s *QAService) SearchChapters(ctx context.Context, novelID int64, query str
 		scores = append(scores, r.Score)
 	}
 	return chapters, scores, nil
-}
-
-// buildQARetrievalContext builds retrieval context using hybrid search for Q&A.
-func (s *QAService) buildQARetrievalContext(ctx context.Context, novel *model.Novel, question string, maxChapter int) string {
-	// Try hybrid search first (semantic + full-text + alias)
-	results, err := s.searchSvc.HybridSearch(ctx, question, novel.ID, maxChapter, 10)
-	if err != nil {
-		// Fallback to semantic-only
-		ragResults, err2 := s.ragSvc.Search(ctx, question, novel.ID, maxChapter, 10)
-		if err2 != nil {
-			return fmt.Sprintf("（检索失败: %v）", err)
-		}
-		return s.ragSvc.BuildContext(novel.Title, maxChapter, ragResults)
-	}
-
-	// Convert hybrid results to RAG context format
-	var ragResults []SearchResult
-	for _, r := range results {
-		ragResults = append(ragResults, SearchResult{
-			Chapter: r.Chapter,
-			Score:   r.FinalScore,
-		})
-	}
-	return s.ragSvc.BuildContext(novel.Title, maxChapter, ragResults)
 }

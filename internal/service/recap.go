@@ -36,7 +36,7 @@ func NewRecapService(
 }
 
 // GenerateRecap generates or retrieves a cached reading recovery recap.
-// Phase 2: Uses RAG semantic search instead of naive "last N chapters".
+// Uses Agentic RAG: multi-step semantic search with LLM verification.
 func (s *RecapService) GenerateRecap(ctx context.Context, novelID int64) (string, error) {
 	novel, err := s.novelRepo.GetByID(novelID)
 	if err != nil {
@@ -56,17 +56,20 @@ func (s *RecapService) GenerateRecap(ctx context.Context, novelID int64) (string
 		return cached.RecapContent, nil
 	}
 
-	// Phase 2 RAG: semantic search for relevant context
+	// Agentic RAG: multi-step retrieval for relevant context
 	recapQuery := "主角当前状态 主线任务 最近关键事件 人物关系 伏笔 重要转折"
-	retrievedCtx, err := s.ragSvc.AgenticRetrieve(ctx, recapQuery, novelID, currentChapter)
-	if err != nil {
-		// Fallback: use recent chapters if RAG fails
-		retrievedCtx = fmt.Sprintf("（RAG 检索失败: %v，使用最近章节）", err)
-	}
+	result, err := s.ragSvc.AgenticRetrieve(ctx, recapQuery, novelID, currentChapter, novel.Title)
 
-	// Add novel info header
-	retrievedCtx = fmt.Sprintf("小说《%s》\n用户阅读进度：第 %d 章 / 共 %d 章\n\n%s",
-		novel.Title, currentChapter, novel.TotalChapters, retrievedCtx)
+	var retrievedCtx string
+	if err != nil {
+		fmt.Printf("[recap] Agentic RAG failed: %v\n", err)
+		retrievedCtx = fmt.Sprintf("小说《%s》\n用户阅读进度：第 %d 章 / 共 %d 章\n\n（检索失败: %v）",
+			novel.Title, currentChapter, novel.TotalChapters, err)
+	} else {
+		fmt.Printf("[recap] Agentic RAG: %d iterations, verified=%v\n", result.Iterations, result.Verified)
+		retrievedCtx = fmt.Sprintf("小说《%s》\n用户阅读进度：第 %d 章 / 共 %d 章\n\n%s",
+			novel.Title, currentChapter, novel.TotalChapters, result.Context)
+	}
 
 	sysPrompt := fmt.Sprintf(`你是一个阅读恢复助手。用户正在阅读小说《%s》，当前读到第 %d 章。
 
