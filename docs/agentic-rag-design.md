@@ -28,10 +28,10 @@ Query → [混合检索] → [LLM 验证] → 不足? → [LLM 改写 Query] →
 
 ```
 RAGService
-├── Search()              纯语义搜索（搜索端点用，速度快）
+├── Search()              语义搜索（Chunk向量优先 → 章级降级 → 全文兜底）
 ├── BuildContext()        上下文拼装（章节摘要 + 人物 + 事件）
 ├── AgenticRetrieve()     多步检索入口（混合搜索 + 验证 + 改写循环）
-│   ├── HybridSearch()    第 1 步：混合检索（语义 + 全文 + 别名）
+│   ├── HybridSearch()    第 1 步：混合检索（语义向量搜索Chunk + 全文）
 │   ├── verifyRetrieval() 第 2 步：LLM 评估检索质量
 │   └── (loop)            第 3 步：改写查询 → 回到第 1 步
 └── verifyRetrieval()     LLM 验证检索质量

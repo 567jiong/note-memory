@@ -28,18 +28,19 @@ func NewRAGService(chapterRepo *repository.ChapterRepo, aiClient *ai.Client, sea
 	}
 }
 
-// SearchResult holds a retrieved chapter with its similarity score.
+// SearchResult holds a retrieved chapter with its similarity score and matched content.
 type SearchResult struct {
-	Chapter model.Chapter
-	Score   float64
+	Chapter        model.Chapter
+	Score          float64
+	MatchedContent string // chunk content that matched the query (empty if chapter-level match)
 }
 
 // AgenticResult holds the complete output of an Agentic RAG retrieval.
 type AgenticResult struct {
-	Context    string          // 最终拼装好的上下文字符串
-	Chapters   []model.Chapter // 去重后的检索结果（按章节号排序）
-	Iterations int             // 实际检索轮数
-	Verified   bool            // 是否通过了 LLM 验证
+	Context    string
+	Chapters   []model.Chapter
+	Iterations int
+	Verified   bool
 }
 
 // retrievalVerdict is the structured output from the LLM verification step.
@@ -50,27 +51,28 @@ type retrievalVerdict struct {
 	RewrittenQuery string `json:"rewritten_query"`
 }
 
-// Search performs semantic similarity search over chapter summaries.
-// Falls back to full-text search if embeddings are unavailable.
+// Search performs semantic similarity search using chunk-level embeddings.
+// Falls back to chapter-level search, then full-text if embeddings are unavailable.
 // maxChapter enforces the spoiler-free boundary.
 func (s *RAGService) Search(ctx context.Context, query string, novelID int64, maxChapter int, topK int) ([]SearchResult, error) {
 	if topK <= 0 {
 		topK = 10
 	}
 
-	// Generate query embedding
 	queryVec, err := s.aiClient.Embedding(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("embed query: %w", err)
 	}
 
 	vec := pgvector.NewVector(queryVec)
-	chapters, scores, err := s.chapterRepo.SearchSimilar(novelID, maxChapter, vec, topK)
+
+	// Phase 3: chunk-level search with matched content for better LLM context
+	chapters, matchedContents, scores, err := s.chapterRepo.SearchChunksWithContent(novelID, maxChapter, vec, topK)
 	if err != nil {
-		return nil, fmt.Errorf("search: %w", err)
+		return nil, fmt.Errorf("chunk search: %w", err)
 	}
 
-	// If no chapters have embeddings yet, fall back to full-text
+	// If no chunks have embeddings yet, fall back to full-text
 	if len(chapters) == 0 {
 		tsQuery := strings.ReplaceAll(query, " ", " | ")
 		ftResults, ftErr := s.chapterRepo.FullTextSearch(novelID, maxChapter, tsQuery, topK)
@@ -79,6 +81,7 @@ func (s *RAGService) Search(ctx context.Context, query string, novelID int64, ma
 		}
 		for _, r := range ftResults {
 			chapters = append(chapters, r.Chapter)
+			matchedContents = append(matchedContents, "") // full-text has no chunk content
 			scores = append(scores, r.FinalScore)
 		}
 	}
@@ -86,29 +89,34 @@ func (s *RAGService) Search(ctx context.Context, query string, novelID int64, ma
 	var results []SearchResult
 	for i, ch := range chapters {
 		results = append(results, SearchResult{
-			Chapter: ch,
-			Score:   scores[i],
+			Chapter:        ch,
+			Score:          scores[i],
+			MatchedContent: matchedContents[i],
 		})
 	}
 	return results, nil
 }
 
 // BuildContext assembles a prompt context from search results.
-// Returns a string suitable for inclusion in a system/user prompt.
 func (s *RAGService) BuildContext(novelTitle string, currentChapter int, results []SearchResult) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("小说《%s》\n", novelTitle))
 	sb.WriteString(fmt.Sprintf("用户阅读进度：第 %d 章\n\n", currentChapter))
 	sb.WriteString("=== 相关章节摘要（按语义相似度检索） ===\n")
 
-	// Collect unique characters and events
 	allChars := make(map[string]model.CharacterInfo)
 	allEvents := make([]model.EventInfo, 0)
 
 	for _, r := range results {
 		ch := r.Chapter
+
+		// Show matched chunk content first (more specific than summary)
+		if r.MatchedContent != "" {
+			sb.WriteString(fmt.Sprintf("[第%d章 %.4f] 匹配片段：%s\n", ch.ChapterNumber, r.Score, r.MatchedContent))
+		}
+
 		if ch.Summary != "" {
-			sb.WriteString(fmt.Sprintf("[第%d章 %.4f] %s\n", ch.ChapterNumber, r.Score, ch.Summary))
+			sb.WriteString(fmt.Sprintf("[第%d章 %.4f] 摘要：%s\n", ch.ChapterNumber, r.Score, ch.Summary))
 		}
 
 		chars, _ := model.UnmarshalCharacters(ch.Characters)
@@ -157,8 +165,7 @@ const (
 	agenticTopK          = 10
 )
 
-// AgenticRetrieve performs multi-step retrieval with LLM verification and query rewriting.
-//
+// AgenticRetrieve performs multi-step retrieval with LLM verification and query rewriting.//
 // Loop:
 //  1. Hybrid search (semantic + full-text + alias expansion)
 //  2. LLM verification: are the results sufficient to answer the query?
@@ -170,17 +177,16 @@ func (s *RAGService) AgenticRetrieve(ctx context.Context, query string, novelID 
 		score   float64
 	}
 
-	seen := make(map[int64]bool)              // chapter ID → seen
-	var allChapters []scoredChapter            // accumulated unique results
+	seen := make(map[int64]bool)
+	var allChapters []scoredChapter
 	currentQuery := query
 	verified := false
 	iteration := 0
 
 	for iteration = 1; iteration <= maxAgenticIterations; iteration++ {
-		// Step 1: Hybrid search
+		// Step 1: Hybrid search (semantic + full-text + alias expansion)
 		results, err := s.searchSvc.HybridSearch(ctx, currentQuery, novelID, maxChapter, agenticTopK)
 		if err != nil {
-			// If hybrid search fails, try semantic-only as fallback
 			sr, err2 := s.Search(ctx, currentQuery, novelID, maxChapter, agenticTopK)
 			if err2 != nil {
 				return nil, fmt.Errorf("agentic search failed (hybrid: %v, semantic: %v)", err, err2)
@@ -200,7 +206,6 @@ func (s *RAGService) AgenticRetrieve(ctx context.Context, query string, novelID 
 			})
 		}
 
-		// If we have no results at all, skip verification and try broader search
 		if len(results) == 0 {
 			continue
 		}
@@ -208,7 +213,6 @@ func (s *RAGService) AgenticRetrieve(ctx context.Context, query string, novelID 
 		// Step 2: LLM verification
 		verdict, err := s.verifyRetrieval(ctx, query, maxChapter, results)
 		if err != nil {
-			// LLM verification failed → accept current results as-is
 			fmt.Printf("[rag] LLM verification failed (iter %d): %v — accepting current results\n", iteration, err)
 			verified = false
 			break
@@ -221,7 +225,6 @@ func (s *RAGService) AgenticRetrieve(ctx context.Context, query string, novelID 
 
 		// Step 3: Rewrite query for next iteration
 		if verdict.RewrittenQuery == "" || verdict.RewrittenQuery == currentQuery {
-			// No useful rewrite — stop iterating
 			break
 		}
 		currentQuery = verdict.RewrittenQuery
@@ -229,12 +232,11 @@ func (s *RAGService) AgenticRetrieve(ctx context.Context, query string, novelID 
 			iteration+1, query, currentQuery, verdict.Missing)
 	}
 
-	// Step 4: Sort by chapter number (chronological order)
+	// Sort by chapter number
 	sort.Slice(allChapters, func(i, j int) bool {
 		return allChapters[i].chapter.ChapterNumber < allChapters[j].chapter.ChapterNumber
 	})
 
-	// Convert to SearchResult for BuildContext
 	var contextResults []SearchResult
 	var chapters []model.Chapter
 	for _, sc := range allChapters {
@@ -245,10 +247,7 @@ func (s *RAGService) AgenticRetrieve(ctx context.Context, query string, novelID 
 		chapters = append(chapters, sc.chapter)
 	}
 
-	// Trim context to ~3000 Chinese chars (~6000 bytes) if too long
 	contextResults = trimContextByScore(contextResults, 3000)
-
-	// Build context
 	context := s.BuildContext(novelTitle, maxChapter, contextResults)
 
 	return &AgenticResult{
@@ -259,14 +258,12 @@ func (s *RAGService) AgenticRetrieve(ctx context.Context, query string, novelID 
 	}, nil
 }
 
-// verifyRetrieval asks the LLM to judge whether the retrieved chapters are sufficient
-// to answer the user's query. Returns a structured verdict.
+// verifyRetrieval asks the LLM to judge retrieval quality.
 func (s *RAGService) verifyRetrieval(ctx context.Context, query string, maxChapter int, results []model.HybridSearchResult) (*retrievalVerdict, error) {
-	// Build a compact summary of retrieved chapters
 	var summaries strings.Builder
 	for i, r := range results {
 		if i >= 5 {
-			break // Only send top 5 to the verifier (saves tokens)
+			break
 		}
 		if r.Chapter.Summary != "" {
 			summaries.WriteString(fmt.Sprintf("[第%d章] %s\n", r.Chapter.ChapterNumber, r.Chapter.Summary))
@@ -310,11 +307,10 @@ func (s *RAGService) verifyRetrieval(ctx context.Context, query string, maxChapt
 	return verdict, nil
 }
 
-// parseVerdict extracts a retrievalVerdict from an LLM response, handling common format issues.
+// parseVerdict extracts a retrievalVerdict from an LLM response.
 func parseVerdict(raw string) (*retrievalVerdict, error) {
 	cleaned := strings.TrimSpace(raw)
 
-	// Strip ```json fences if present
 	if strings.HasPrefix(cleaned, "```") {
 		cleaned = strings.TrimPrefix(cleaned, "```json")
 		cleaned = strings.TrimPrefix(cleaned, "```")
@@ -324,15 +320,14 @@ func parseVerdict(raw string) (*retrievalVerdict, error) {
 
 	var v retrievalVerdict
 	if err := json.Unmarshal([]byte(cleaned), &v); err != nil {
-		// Try to find a JSON object in the response
 		start := strings.Index(cleaned, "{")
 		end := strings.LastIndex(cleaned, "}")
 		if start >= 0 && end > start {
 			if err2 := json.Unmarshal([]byte(cleaned[start:end+1]), &v); err2 != nil {
-				return nil, fmt.Errorf("json unmarshal failed: %w (cleaned: %s)", err, cleaned[:min(len(cleaned), 200)])
+				return nil, fmt.Errorf("json unmarshal failed: %w", err)
 			}
 		} else {
-			return nil, fmt.Errorf("no JSON object found in response: %s", cleaned[:min(len(cleaned), 200)])
+			return nil, fmt.Errorf("no JSON object found in response")
 		}
 	}
 
@@ -341,7 +336,6 @@ func parseVerdict(raw string) (*retrievalVerdict, error) {
 
 // ---- Helpers ----
 
-// convertSearchResults converts []model.HybridSearchResult to the format used by Search().
 func convertSearchResults(sr []SearchResult) []model.HybridSearchResult {
 	result := make([]model.HybridSearchResult, 0, len(sr))
 	for _, r := range sr {
@@ -353,10 +347,7 @@ func convertSearchResults(sr []SearchResult) []model.HybridSearchResult {
 	return result
 }
 
-// trimContextByScore limits context to roughly maxChars Chinese characters,
-// keeping the highest-scoring results.
 func trimContextByScore(results []SearchResult, maxChars int) []SearchResult {
-	// Estimate current size
 	totalChars := 0
 	for _, r := range results {
 		if r.Chapter.Summary != "" {
@@ -367,7 +358,6 @@ func trimContextByScore(results []SearchResult, maxChars int) []SearchResult {
 		return results
 	}
 
-	// Sort by score descending, keep top until cap reached
 	sorted := make([]SearchResult, len(results))
 	copy(sorted, results)
 	sort.Slice(sorted, func(i, j int) bool {
@@ -384,7 +374,6 @@ func trimContextByScore(results []SearchResult, maxChars int) []SearchResult {
 		}
 	}
 
-	// Re-sort by chapter number
 	sort.Slice(trimmed, func(i, j int) bool {
 		return trimmed[i].Chapter.ChapterNumber < trimmed[j].Chapter.ChapterNumber
 	})

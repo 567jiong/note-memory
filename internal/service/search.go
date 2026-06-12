@@ -8,6 +8,7 @@ import (
 	"note-memory/internal/repository"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -369,8 +370,9 @@ func (s *SearchService) RebuildAliasIndex(novelID int64) error {
 
 // ---- Hybrid Search ----
 
-// HybridSearch combines pgvector semantic search with tsvector full-text search.
+// HybridSearch combines chunk-level semantic search with tsvector full-text search.
 // Weights: semantic 0.7 + full-text 0.3
+// Semantic branch searches chapter_chunks.embedding and aggregates by chapter.
 // Falls back to pure full-text search if embeddings are unavailable.
 func (s *SearchService) HybridSearch(ctx context.Context, query string, novelID int64, maxChapter int, topK int) ([]model.HybridSearchResult, error) {
 	if topK <= 0 {
@@ -387,24 +389,67 @@ func (s *SearchService) HybridSearch(ctx context.Context, query string, novelID 
 	// 3. Try to generate query embedding; fall back to full-text if unavailable
 	queryVec, err := s.aiClient.Embedding(ctx, expandedQuery)
 	if err != nil {
-		// Embedding API unavailable (e.g., DeepSeek doesn't support /embeddings)
-		// Fall back to pure full-text search
 		return s.chapterRepo.FullTextSearch(novelID, maxChapter, tsQuery, topK)
 	}
 
-	// 4. Run hybrid search (semantic + full-text)
 	vec := pgvector.NewVector(queryVec)
-	results, err := s.chapterRepo.HybridSearch(novelID, maxChapter, vec, tsQuery, topK)
-	if err != nil {
-		return nil, fmt.Errorf("hybrid search: %w", err)
+
+	// 4. Chunk-level semantic search (aggregated by chapter)
+	semChapters, semScores, semErr := s.chapterRepo.SearchChunks(novelID, maxChapter, vec, topK*2)
+	if semErr != nil {
+		return nil, fmt.Errorf("chunk semantic search: %w", semErr)
 	}
 
-	// 5. If no results with embeddings, fall back to full-text
-	if len(results) == 0 {
-		return s.chapterRepo.FullTextSearch(novelID, maxChapter, tsQuery, topK)
+	// 5. Full-text search
+	ftResults, ftErr := s.chapterRepo.FullTextSearch(novelID, maxChapter, tsQuery, topK*2)
+	if ftErr != nil {
+		return nil, fmt.Errorf("fulltext search: %w", ftErr)
 	}
 
-	return results, nil
+	// 6. Merge semantic + full-text with weighted scoring
+	return mergeHybridResults(semChapters, semScores, ftResults), nil
+}
+
+// mergeHybridResults combines semantic and full-text results with weights 0.7/0.3.
+func mergeHybridResults(semChapters []model.Chapter, semScores []float64, ftResults []model.HybridSearchResult) []model.HybridSearchResult {
+	const semWeight = 0.7
+	const textWeight = 0.3
+
+	// Build lookup: chapterID → best scores
+	type merged struct {
+		chapter   model.Chapter
+		semScore  float64
+		textScore float64
+	}
+	byID := make(map[int64]*merged)
+
+	for i, ch := range semChapters {
+		byID[ch.ID] = &merged{chapter: ch, semScore: semScores[i]}
+	}
+	for _, r := range ftResults {
+		if m, ok := byID[r.Chapter.ID]; ok {
+			m.textScore = r.FinalScore
+		} else {
+			byID[r.Chapter.ID] = &merged{chapter: r.Chapter, textScore: r.FinalScore}
+		}
+	}
+
+	// Calculate final scores and collect
+	var results []model.HybridSearchResult
+	for _, m := range byID {
+		results = append(results, model.HybridSearchResult{
+			Chapter:    m.chapter,
+			SemScore:   m.semScore,
+			TextScore:  m.textScore,
+			FinalScore: semWeight*m.semScore + textWeight*m.textScore,
+		})
+	}
+
+	// Sort by final score descending
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].FinalScore > results[j].FinalScore
+	})
+	return results
 }
 
 // getNovelDict returns the custom dict path for a novel, or empty string.

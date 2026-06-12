@@ -80,6 +80,21 @@ type EntityAlias struct {
 
 func (EntityAlias) TableName() string { return "entity_aliases" }
 
+// ChapterChunk represents a content chunk within a chapter for fine-grained embedding search.
+type ChapterChunk struct {
+	ID         int64           `json:"id" gorm:"primaryKey;autoIncrement"`
+	NovelID    int64           `json:"novel_id" gorm:"index:idx_chunks_novel"`
+	ChapterID  int64           `json:"chapter_id" gorm:"index:idx_chunks_chapter"`
+	ChunkIndex int             `json:"chunk_index" gorm:"not null;default:0"`
+	Content    string          `json:"content" gorm:"type:text;not null"`
+	Embedding  *pgvector.Vector `json:"-" gorm:"type:vector(1024)"`
+	CharStart  int             `json:"char_start" gorm:"not null;default:0"`
+	CharEnd    int             `json:"char_end" gorm:"not null;default:0"`
+	CreatedAt  time.Time       `json:"created_at"`
+}
+
+func (ChapterChunk) TableName() string { return "chapter_chunks" }
+
 // AliasInfo holds canonical name and all its aliases (for search expansion).
 type AliasInfo struct {
 	Name    string   `json:"name"`

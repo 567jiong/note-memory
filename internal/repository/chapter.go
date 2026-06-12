@@ -271,3 +271,130 @@ func (r *ChapterRepo) UpsertAliases(entries []model.EntityAlias) error {
 		DoNothing: true,
 	}).CreateInBatches(entries, 200).Error
 }
+
+// ---- Chapter Chunks ----
+
+// BatchCreateChunks inserts chunk records in batches.
+func (r *ChapterRepo) BatchCreateChunks(chunks []model.ChapterChunk) error {
+	if len(chunks) == 0 {
+		return nil
+	}
+	return r.db.CreateInBatches(chunks, 100).Error
+}
+
+// DeleteChunksByNovel removes all chunks for a novel (used before re-chunking).
+func (r *ChapterRepo) DeleteChunksByNovel(novelID int64) error {
+	return r.db.Where("novel_id = ?", novelID).Delete(&model.ChapterChunk{}).Error
+}
+
+// ListChunksByChapter returns all chunks for a chapter ordered by chunk_index.
+func (r *ChapterRepo) ListChunksByChapter(chapterID int64) ([]model.ChapterChunk, error) {
+	var chunks []model.ChapterChunk
+	err := r.db.Where("chapter_id = ?", chapterID).
+		Order("chunk_index ASC").Find(&chunks).Error
+	return chunks, err
+}
+
+// SearchChunks performs pgvector cosine similarity search over chunk embeddings,
+// returning the top-K chapters (one result per chapter, max score).
+func (r *ChapterRepo) SearchChunks(novelID int64, maxChapter int, queryVec pgvector.Vector, topK int) ([]model.Chapter, []float64, error) {
+	type row struct {
+		model.Chapter
+		Score float64
+	}
+
+	var rows []row
+	err := r.db.Raw(`
+		SELECT DISTINCT ON (c.id) c.*,
+		       1 - (cc.embedding <=> ?) AS score
+		FROM chapter_chunks cc
+		JOIN chapters c ON c.id = cc.chapter_id
+		WHERE cc.novel_id = ?
+		  AND c.chapter_number <= ?
+		  AND cc.embedding IS NOT NULL
+		ORDER BY c.id, score DESC
+		LIMIT ?
+	`, queryVec, novelID, maxChapter, topK).Scan(&rows).Error
+
+	if err != nil {
+		return nil, nil, fmt.Errorf("chunk search: %w", err)
+	}
+
+	chapters := make([]model.Chapter, 0, len(rows))
+	scores := make([]float64, 0, len(rows))
+	for _, row := range rows {
+		chapters = append(chapters, row.Chapter)
+		scores = append(scores, row.Score)
+	}
+	return chapters, scores, nil
+}
+
+// SearchChunksWithContent returns chunk search results with matched content, deduplicated by chapter.
+func (r *ChapterRepo) SearchChunksWithContent(novelID int64, maxChapter int, queryVec pgvector.Vector, topK int) ([]model.Chapter, []string, []float64, error) {
+	type row struct {
+		model.Chapter
+		ChunkContent string
+		Score        float64
+	}
+
+	var rows []row
+	err := r.db.Raw(`
+		SELECT c.*, cc.content AS chunk_content,
+		       1 - (cc.embedding <=> ?) AS score
+		FROM chapter_chunks cc
+		JOIN chapters c ON c.id = cc.chapter_id
+		WHERE cc.novel_id = ?
+		  AND c.chapter_number <= ?
+		  AND cc.embedding IS NOT NULL
+		ORDER BY score DESC
+		LIMIT ?
+	`, queryVec, novelID, maxChapter, topK).Scan(&rows).Error
+
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("chunk search with content: %w", err)
+	}
+
+	// Deduplicate by chapter ID, keeping highest score
+	seen := make(map[int64]int)
+	chapters := make([]model.Chapter, 0, len(rows))
+	contents := make([]string, 0, len(rows))
+	scores := make([]float64, 0, len(rows))
+
+	for _, row := range rows {
+		if idx, ok := seen[row.Chapter.ID]; ok {
+			if row.Score > scores[idx] {
+				chapters[idx] = row.Chapter
+				contents[idx] = row.ChunkContent
+				scores[idx] = row.Score
+			}
+		} else {
+			seen[row.Chapter.ID] = len(chapters)
+			chapters = append(chapters, row.Chapter)
+			contents = append(contents, row.ChunkContent)
+			scores = append(scores, row.Score)
+		}
+	}
+	return chapters, contents, scores, nil
+}
+
+// BatchUpdateChunkEmbedding updates embeddings for multiple chunks.
+func (r *ChapterRepo) BatchUpdateChunkEmbedding(chunkIDs []int64, embeddings []pgvector.Vector) error {
+	if len(chunkIDs) != len(embeddings) {
+		return fmt.Errorf("chunkIDs and embeddings length mismatch: %d vs %d", len(chunkIDs), len(embeddings))
+	}
+	for i, id := range chunkIDs {
+		if err := r.db.Model(&model.ChapterChunk{}).Where("id = ?", id).
+			Update("embedding", embeddings[i]).Error; err != nil {
+			return fmt.Errorf("update chunk %d embedding: %w", id, err)
+		}
+	}
+	return nil
+}
+
+// ListChunksWithoutEmbedding returns chunks without embeddings.
+func (r *ChapterRepo) ListChunksWithoutEmbedding(novelID int64, limit int) ([]model.ChapterChunk, error) {
+	var chunks []model.ChapterChunk
+	err := r.db.Where("novel_id = ? AND embedding IS NULL", novelID).
+		Order("id ASC").Limit(limit).Find(&chunks).Error
+	return chunks, err
+}

@@ -234,14 +234,15 @@ note-memory/
 │   ├── parser/chapter.go      # TXT 章节解析器
 │   ├── repository/            # 数据访问层
 │   │   ├── novel.go
-│   │   ├── chapter.go         # 含 HybridSearch / FullTextSearch / 别名管理
+│   │   ├── chapter.go         # 含 HybridSearch / FullTextSearch / SearchChunks / 别名管理
 │   │   ├── progress.go
 │   │   └── recap.go
 │   ├── service/               # 业务逻辑层
 │   │   ├── novel.go           # 小说上传/管理
-│   │   ├── chapter.go         # AI 章节总结 + FillEmbeddings
+│   │   ├── chapter.go         # AI 章节总结 + Chunk 分块 + FillEmbeddings
+│   │   ├── chunker.go         # 内容分块引擎（句子切分、贪婪合并、重叠策略）
 │   │   ├── recap.go           # 回顾生成
-│   │   ├── rag.go             # 语义检索 + 上下文构建
+│   │   ├── rag.go             # 语义检索（Chunk优先） + Agentic RAG + 上下文构建
 │   │   ├── search.go          # 混合检索（jieba分词 + 向量 + 全文 + 别名扩展 + 噪声过滤）
 │   │   ├── qa.go              # 无剧透问答
 │   │   └── metallm.go         # 元数据 LLM 提取
@@ -253,7 +254,8 @@ note-memory/
 ├── migrations/
 │   ├── 001_init.sql           # 核心表
 │   ├── 002_pgvector.sql       # pgvector 扩展 + embedding 列(1024维)
-│   └── 003_search.sql         # 全文检索 + entity_aliases 别名表
+│   ├── 003_search.sql         # 全文检索 + entity_aliases 别名表
+│   └── 004_chunks.sql         # chapter_chunks 分块表 + 索引
 ├── web/templates/             # 前端模板
 │   ├── layout.html
 │   ├── index.html
@@ -295,6 +297,17 @@ API 设计：
 * ✅ Agentic RAG：检索 → LLM 验证 → 改写查询 → 重新检索 → 生成
 * ✅ 独立 Embedding API 配置：支持 Chat 和 Embedding 使用不同 API（如 DeepSeek Chat + 硅基流动 Embedding）
 * ✅ Web UI 聊天面板 + 搜索框
+
+第二阶段增强（已完成 ✅ — 2026-06-12）
+
+增加：
+* ✅ Agentic RAG 完善：LLM 验证检索质量 → 不足则改写查询 → 重新检索（最多 3 轮），含 JSON 解析容错
+* ✅ 内容分块检索（Chapter Chunking）：章节内容按句子边界切分为重叠块（≤400字），每块独立 Embedding，搜索时块级匹配 → 按章节聚合去重
+* ✅ 分块策略：句子边界（。！？…）→ 贪婪合并 → 相邻块重叠 2 句 → 段落边界 \n\n 优先切分 → 超长句在 ，；处切分
+* ✅ 搜索降级链：Chunk 向量搜索 → 全文检索（两级 fallback，章级 Embedding 已移除）
+* ✅ 混合搜索升级：HybridSearch 语义分支改为 Chunk 搜索 + 按章节聚合，与全文检索加权融合
+* ✅ 移除章级 Embedding：章节不再单独生成向量，语义搜索完全由 Chunk 承担
+* ✅ chapter_chunks 表 + ChunkContent 分块器 + Repository + 单元测试
 
 待后续：
 * 人物关系图（知识图谱可视化）

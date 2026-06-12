@@ -10,6 +10,8 @@ import (
 	"note-memory/internal/repository"
 	"strings"
 	"sync"
+
+	"github.com/pgvector/pgvector-go"
 )
 
 // ChapterService handles AI-powered chapter analysis.
@@ -32,6 +34,8 @@ func NewChapterService(chapterRepo *repository.ChapterRepo, aiClient *ai.Client,
 }
 
 // ParseAllChapters summarizes all unprocessed chapters for a novel.
+// Semantic search uses chunk-level embeddings (chapter_chunks), so chapter-level
+// embedding is no longer generated.
 func (s *ChapterService) ParseAllChapters(ctx context.Context, novelID int64) {
 	for {
 		chapters, err := s.chapterRepo.ListUnprocessed(novelID, s.concurrency)
@@ -40,9 +44,8 @@ func (s *ChapterService) ParseAllChapters(ctx context.Context, novelID int64) {
 			return
 		}
 		if len(chapters) == 0 {
-			log.Printf("[chapter] novel %d: summaries done, filling embeddings from content...", novelID)
-			s.FillEmbeddings(ctx, novelID)
-			// Aliases already written incrementally per-chapter; just refresh dict
+			log.Printf("[chapter] novel %d: all summaries done, backfilling chunk embeddings...", novelID)
+			s.FillChunkEmbeddings(ctx, novelID)
 			s.searchSvc.RefreshDictForNovel(novelID)
 			return
 		}
@@ -64,7 +67,8 @@ func (s *ChapterService) ParseAllChapters(ctx context.Context, novelID int64) {
 	}
 }
 
-// summarizeChapter sends a chapter to AI for summarization and extraction.
+// summarizeChapter sends a chapter to AI for summarization, then chunks the content
+// and generates chunk-level embeddings for semantic search.
 func (s *ChapterService) summarizeChapter(ctx context.Context, ch *model.Chapter) {
 	sysPrompt := `你是一个小说分析助手。请根据提供的章节内容完成以下任务：
 
@@ -97,18 +101,6 @@ func (s *ChapterService) summarizeChapter(ctx context.Context, ch *model.Chapter
 		return
 	}
 
-	// Generate embedding for the summary
-	if summary != "" {
-		vec, err := s.aiClient.Embedding(ctx, summary)
-		if err != nil {
-			log.Printf("[chapter] embedding error for chapter %d: %v", ch.ChapterNumber, err)
-		} else {
-			if err := s.chapterRepo.UpdateEmbedding(ch.ID, vec); err != nil {
-				log.Printf("[chapter] save embedding error: %v", err)
-			}
-		}
-	}
-
 	// Update full-text search index
 	if err := s.searchSvc.UpdateSearchIndex(ch.ID, ch.NovelID, ch.Title, summary, charsJSON, eventsJSON); err != nil {
 		log.Printf("[chapter] search index error for chapter %d: %v", ch.ChapterNumber, err)
@@ -119,94 +111,100 @@ func (s *ChapterService) summarizeChapter(ctx context.Context, ch *model.Chapter
 		log.Printf("[chapter] alias upsert error for chapter %d: %v", ch.ChapterNumber, err)
 	}
 
-	log.Printf("[chapter] novel %d chapter %d: summary + embedding + search index + alias done", ch.NovelID, ch.ChapterNumber)
+	// Chunk content into overlapping segments and generate chunk embeddings
+	s.chunkAndEmbedChapter(ctx, ch)
+
+	log.Printf("[chapter] novel %d chapter %d: summary + search index + alias + %d chunks done",
+		ch.NovelID, ch.ChapterNumber, countChunks(ch.Content))
 }
 
-// FillEmbeddings generates embeddings from chapter content for chapters that have
-// content but no embedding vector yet. Unlike summarizeChapter, this does NOT call
-// the LLM — it only calls the embedding API. Content is truncated to fit the model's
-// token limit before sending.
-func (s *ChapterService) FillEmbeddings(ctx context.Context, novelID int64) {
-	for {
-		chapters, err := s.chapterRepo.ListWithoutEmbedding(novelID, s.concurrency)
+// chunkAndEmbedChapter splits chapter content into overlapping chunks and generates embeddings.
+func (s *ChapterService) chunkAndEmbedChapter(ctx context.Context, ch *model.Chapter) {
+	content := strings.TrimSpace(ch.Content)
+	if content == "" {
+		return
+	}
+
+	chunks := ChunkContent(content)
+	if len(chunks) == 0 {
+		return
+	}
+
+	records := make([]model.ChapterChunk, 0, len(chunks))
+	for i, ck := range chunks {
+		records = append(records, model.ChapterChunk{
+			NovelID:    ch.NovelID,
+			ChapterID:  ch.ID,
+			ChunkIndex: i + 1,
+			Content:    ck.Content,
+			CharStart:  ck.CharStart,
+			CharEnd:    ck.CharEnd,
+		})
+	}
+
+	if err := s.chapterRepo.BatchCreateChunks(records); err != nil {
+		log.Printf("[chunk] batch create error for chapter %d: %v", ch.ChapterNumber, err)
+		return
+	}
+
+	for i := range records {
+		vec, err := s.aiClient.Embedding(ctx, records[i].Content)
 		if err != nil {
-			log.Printf("[embedding] error listing chapters: %v", err)
+			log.Printf("[chunk] embedding error for chapter %d chunk %d: %v", ch.ChapterNumber, i+1, err)
+			continue
+		}
+		if err := s.chapterRepo.BatchUpdateChunkEmbedding(
+			[]int64{records[i].ID}, []pgvector.Vector{pgvector.NewVector(vec)},
+		); err != nil {
+			log.Printf("[chunk] save embedding error for chapter %d chunk %d: %v", ch.ChapterNumber, i+1, err)
+		}
+	}
+}
+
+// FillChunkEmbeddings backfills missing chunk-level embeddings.
+func (s *ChapterService) FillChunkEmbeddings(ctx context.Context, novelID int64) {
+	for {
+		chunks, err := s.chapterRepo.ListChunksWithoutEmbedding(novelID, s.concurrency*3)
+		if err != nil {
+			log.Printf("[chunk] error listing chunks: %v", err)
 			return
 		}
-		if len(chapters) == 0 {
-			log.Printf("[embedding] novel %d: all embeddings filled", novelID)
+		if len(chunks) == 0 {
+			log.Printf("[chunk] novel %d: all chunk embeddings filled", novelID)
 			return
 		}
 
 		var wg sync.WaitGroup
 		sem := make(chan struct{}, s.concurrency)
 
-		for i := range chapters {
-			ch := chapters[i]
+		for i := range chunks {
+			ck := chunks[i]
 			wg.Add(1)
 			sem <- struct{}{}
-			go func(c model.Chapter) {
+			go func(c model.ChapterChunk) {
 				defer wg.Done()
 				defer func() { <-sem }()
-				s.embedChapterContent(ctx, &c)
-			}(ch)
+				vec, err := s.aiClient.Embedding(ctx, c.Content)
+				if err != nil {
+					log.Printf("[chunk] embedding error for chunk %d: %v", c.ID, err)
+					return
+				}
+				if err := s.chapterRepo.BatchUpdateChunkEmbedding(
+					[]int64{c.ID}, []pgvector.Vector{pgvector.NewVector(vec)},
+				); err != nil {
+					log.Printf("[chunk] save embedding error for chunk %d: %v", c.ID, err)
+				}
+			}(ck)
 		}
 		wg.Wait()
 	}
 }
 
-// embedChapterContent generates an embedding from the chapter's content text.
-// The content is truncated to fit within the embedding model's token window.
-// BAAI/bge-large-zh-v1.5 has a 512-token limit; we conservatively truncate to
-// 400 runes (~200-300 tokens for Chinese) to stay safely under the cap.
-func (s *ChapterService) embedChapterContent(ctx context.Context, ch *model.Chapter) {
-	text := strings.TrimSpace(ch.Content)
-	if text == "" {
-		// Fall back to summary if content is empty
-		text = strings.TrimSpace(ch.Summary)
-		if text == "" {
-			log.Printf("[embedding] chapter %d: no content or summary, skipping", ch.ChapterNumber)
-			return
-		}
+func countChunks(content string) int {
+	if content == "" {
+		return 0
 	}
-
-	text = truncateForEmbedding(text, 400)
-
-	vec, err := s.aiClient.Embedding(ctx, text)
-	if err != nil {
-		log.Printf("[embedding] chapter %d embedding error: %v", ch.ChapterNumber, err)
-		return
-	}
-
-	if err := s.chapterRepo.UpdateEmbedding(ch.ID, vec); err != nil {
-		log.Printf("[embedding] chapter %d save error: %v", ch.ChapterNumber, err)
-		return
-	}
-
-	log.Printf("[embedding] novel %d chapter %d: content embedding done (%d runes)",
-		ch.NovelID, ch.ChapterNumber, len([]rune(text)))
-}
-
-// truncateForEmbedding truncates text to maxRunes, trying to break at a natural
-// sentence boundary (。！？…\n) so the truncated text remains semantically coherent.
-func truncateForEmbedding(text string, maxRunes int) string {
-	runes := []rune(text)
-	if len(runes) <= maxRunes {
-		return text
-	}
-	// Search backwards from maxRunes for a sentence boundary
-	searchStart := maxRunes - 1
-	searchEnd := maxRunes - 80
-	if searchEnd < 0 {
-		searchEnd = 0
-	}
-	for i := searchStart; i >= searchEnd; i-- {
-		switch runes[i] {
-		case '。', '！', '？', '…', '\n':
-			return string(runes[:i+1])
-		}
-	}
-	return string(runes[:maxRunes])
+	return (len([]rune(content)) / 300) + 1
 }
 
 // parseAIResponse extracts XML sections from the AI response.
@@ -228,7 +226,6 @@ func parseAIResponse(resp string) (summary string, chars []model.CharacterInfo, 
 	return
 }
 
-// extractXML extracts content between XML tags.
 func extractXML(s, tag string) string {
 	open := "<" + tag + ">"
 	close := "</" + tag + ">"

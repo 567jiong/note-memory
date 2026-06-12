@@ -1,6 +1,6 @@
 # RAG 检索系统 — 技术设计文档
 
-> 版本：2.1 | 日期：2026-06-11 | 状态：已实现
+> 版本：3.0 | 日期：2026-06-12 | 状态：已实现
 
 ## 1. 架构概览
 
@@ -17,16 +17,16 @@
           ▼
    ┌─ 混合检索（Hybrid Search）─────────────┐
    │                                        │
-   │  pgvector 语义检索      tsvector 全文检索 │
+   │  Chunk 向量检索          tsvector 全文检索│
    │  ┌──────────────┐    ┌──────────────┐  │
-   │  │ embedding <=> │    │ ts_rank(tsv, │  │
-   │  │ 问题向量       │    │  to_tsquery) │  │
-   │  │ → 语义相似度   │    │ → 关键词匹配度 │  │
+   │  │ cc.embedding │    │ ts_rank(tsv, │  │
+   │  │ <=> 问题向量  │    │  to_tsquery) │  │
+   │  │ → 按章节聚合  │    │ → 关键词匹配度 │  │
    │  └──────┬───────┘    └──────┬───────┘  │
    │         │                    │          │
    │         └──────┬─────────────┘          │
    │                ▼                        │
-   │    加权融合: 0.7×语义 + 0.3×全文        │
+   │    Go 层合并：0.7×语义 + 0.3×全文       │
    └───────────────────────────────────────┘
           │
           ▼
@@ -44,11 +44,12 @@
 
 ### 2.1 模型
 
-使用 OpenAI `text-embedding-3-small` 兼容模型，维度 1536。
+使用 BAAI/bge-large-zh-v1.5 模型（兼容 OpenAI Embedding API），维度 1024。
+Embedding 仅用于 **Chunk 级别**（chapter_chunks 表），章节级 embedding 已移除。
 
 ```
 输入: "叶尘在山洞中获得太虚真人传承戒指，开启修仙之路"
-输出: [0.023, -0.451, 0.789, ...]  (1536 维 float32 向量)
+输出: [0.023, -0.451, 0.789, ...]  (1024 维 float32 向量)
 ```
 
 ### 2.2 原理
@@ -275,15 +276,73 @@ CREATE INDEX idx_entity_aliases_lookup ON entity_aliases(novel_id, alias);
 CREATE INDEX idx_chapters_novel_number ON chapters(novel_id, chapter_number);
 ```
 
-## 9. 文件清单
+## 9. 内容分块（Chapter Chunking）
+
+### 9.1 动机
+
+每章只存一个 Embedding（来自 AI 摘要）存在盲区：
+- 摘要只有 2-3 句话，用户搜索"掌天瓶"时摘要可能用"神秘法宝"代替了这个词
+- 一章可能有 3-5 个独立事件/场景，一个向量无法区分
+- 摘要的语义粒度不足以匹配细节查询
+
+### 9.2 分块策略
+
+```
+章节内容（最长 50000 字）
+    ↓
+句子切分（正则：。！？…\n）
+    ↓
+贪婪合并（≤400 字/块，BGE 512 token 限制）
+    ↓
+相邻块重叠 2 句（~50-100 字，保持语义连续）
+    ↓
+段落 \n\n 优先作为块边界（场景切换点）
+    ↓
+超长句（>400 字）在 ，；处切分
+    ↓
+chapter_chunks 表（每块独立 Embedding）
+```
+
+### 9.3 搜索降级链
+
+```
+查询 → Embedding → query_vec
+    ↓
+① Chunk 级搜索（chapter_chunks.embedding）         ← 首选，细粒度
+    ↓ 无 Chunk
+② 章级搜索（chapters.embedding）                    ← 降级，粗粒度
+    ↓ 无 Embedding
+③ 全文检索（chapters.tsv）                          ← 兜底
+```
+
+Chunk 搜索结果按 `chapter_id` 去重聚合，每章取最高分。
+
+### 9.4 存储结构
+
+```sql
+CREATE TABLE chapter_chunks (
+    id BIGSERIAL PRIMARY KEY,
+    novel_id BIGINT REFERENCES novels(id) ON DELETE CASCADE,
+    chapter_id BIGINT REFERENCES chapters(id) ON DELETE CASCADE,
+    chunk_index INT NOT NULL DEFAULT 0,
+    content TEXT NOT NULL,          -- 块文本 ≤400 字
+    embedding vector(1024),         -- 块向量
+    char_start INT NOT NULL,        -- 原文起始位置
+    char_end INT NOT NULL           -- 原文结束位置
+);
+```
+
+## 10. 文件清单
 
 | 文件 | 职责 |
 |------|------|
 | `internal/ai/embedding.go` | Embedding API 调用 |
+| `internal/service/chunker.go` | 内容分块引擎（句子切分、贪婪合并、重叠策略） |
 | `internal/service/search.go` | 混合检索、别名扩展、Bigram 分词 |
-| `internal/service/rag.go` | 语义搜索、上下文拼装 |
-| `internal/service/qa.go` | 问答服务（集成混合检索） |
-| `internal/repository/chapter.go` | SQL 层：HybridSearch / SearchSimilar / 别名 CRUD |
-| `internal/model/models.go` | HybridSearchResult / EntityAlias / AliasInfo |
+| `internal/service/rag.go` | 语义搜索（Chunk 优先 + 章级降级）、Agentic RAG、上下文拼装 |
+| `internal/service/qa.go` | 问答服务（集成 Agentic RAG） |
+| `internal/repository/chapter.go` | SQL 层：HybridSearch / SearchChunks / SearchSimilar / 别名 CRUD |
+| `internal/model/models.go` | ChapterChunk / HybridSearchResult / EntityAlias / AliasInfo |
 | `migrations/002_pgvector.sql` | pgvector 列 + 扩展 |
 | `migrations/003_search.sql` | search_text / tsv / entity_aliases |
+| `migrations/004_chunks.sql` | chapter_chunks 表 + 索引 |

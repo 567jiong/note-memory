@@ -153,9 +153,9 @@ func (s *NovelService) StartParse(novelID int64) {
 	go s.chapterSvc.ParseAllChapters(context.Background(), novelID)
 }
 
-// FillEmbeddings triggers async embedding generation from chapter content.
+// FillEmbeddings triggers async chunk embedding backfill.
 func (s *NovelService) FillEmbeddings(novelID int64) {
-	go s.chapterSvc.FillEmbeddings(context.Background(), novelID)
+	go s.chapterSvc.FillChunkEmbeddings(context.Background(), novelID)
 }
 
 // detectAndDecode auto-detects GBK/GB18030 encoding and converts to UTF-8.
