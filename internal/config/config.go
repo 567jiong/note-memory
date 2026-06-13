@@ -7,9 +7,10 @@ import (
 )
 
 type Config struct {
-	DB       DBConfig
-	OpenAI   OpenAIConfig
-	Server   ServerConfig
+	DB     DBConfig
+	OpenAI OpenAIConfig
+	Server ServerConfig
+	Neo4j  Neo4jConfig
 }
 
 type DBConfig struct {
@@ -40,6 +41,12 @@ type ServerConfig struct {
 	Port int
 }
 
+type Neo4jConfig struct {
+	URI      string
+	User     string
+	Password string
+}
+
 func Load() *Config {
 	return &Config{
 		DB: DBConfig{
@@ -59,6 +66,11 @@ func Load() *Config {
 		},
 		Server: ServerConfig{
 			Port: getEnvInt("SERVER_PORT", 8080),
+		},
+		Neo4j: Neo4jConfig{
+			URI:      getEnv("NEO4J_URI", ""),
+			User:     getEnv("NEO4J_USER", "neo4j"),
+			Password: getEnv("NEO4J_PASSWORD", "password"),
 		},
 	}
 }

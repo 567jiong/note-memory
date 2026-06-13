@@ -310,9 +310,24 @@ API 设计：
 * ✅ chapter_chunks 表 + ChunkContent 分块器 + Repository + 单元测试
 
 待后续：
-* 人物关系图（知识图谱可视化）
-* 事件时间线（交互式时间线浏览）
-* 人物卡片/状态变化追踪
+
+方向 B：知识图谱（设计阶段 📝 — 2026-06-12）
+
+设计文档：[docs/neo4j-knowledge-graph-design.md](docs/neo4j-knowledge-graph-design.md)
+
+混合架构 Neo4j + PostgreSQL：
+* 🆕 Neo4j 图数据库：实体节点（Character/Item/Realm/Event/Faction/Location）+ 关系边
+* PostgreSQL 不变：章节文本 + Chunk 向量搜索 + 全文检索
+* 两库互补：PG 管"这段内容讲了什么"，Neo4j 管"这些内容之间怎么关联"
+
+规划功能：
+* 人物关系图谱（师徒/敌对/道侣/宗门归属）→ Cypher 图遍历
+* 境界突破时间线（每次突破的章节 + 年龄）→ 属性路径查询
+* 物品传承链（法宝功法的主人变化）→ Cypher 路径查询
+* 事件参与网络（谁参与了哪个事件、什么角色）→ 图聚合
+* 状态变化追踪（角色状态随时间变化）→ APPEARS_IN 关系属性
+
+预计 4 个 Phase，~16h
 
 第三阶段（商业化）
 

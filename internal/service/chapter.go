@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"note-memory/internal/ai"
+	"note-memory/internal/graph"
 	"note-memory/internal/model"
 	"note-memory/internal/repository"
 	"strings"
@@ -20,15 +21,17 @@ type ChapterService struct {
 	aiClient    *ai.Client
 	ragSvc      *RAGService
 	searchSvc   *SearchService
+	graphWriter *graph.GraphWriter
 	concurrency int
 }
 
-func NewChapterService(chapterRepo *repository.ChapterRepo, aiClient *ai.Client, ragSvc *RAGService, searchSvc *SearchService) *ChapterService {
+func NewChapterService(chapterRepo *repository.ChapterRepo, aiClient *ai.Client, ragSvc *RAGService, searchSvc *SearchService, graphWriter *graph.GraphWriter) *ChapterService {
 	return &ChapterService{
 		chapterRepo: chapterRepo,
 		aiClient:    aiClient,
 		ragSvc:      ragSvc,
 		searchSvc:   searchSvc,
+		graphWriter:  graphWriter,
 		concurrency: 3,
 	}
 }
@@ -113,6 +116,11 @@ func (s *ChapterService) summarizeChapter(ctx context.Context, ch *model.Chapter
 
 	// Chunk content into overlapping segments and generate chunk embeddings
 	s.chunkAndEmbedChapter(ctx, ch)
+
+	// Sync to Neo4j knowledge graph (novel title/author set by first sync)
+	if s.graphWriter != nil && s.graphWriter.IsEnabled() {
+		_ = s.graphWriter.SyncChapter(ctx, &model.Novel{ID: ch.NovelID}, ch, charsJSON, eventsJSON)
+	}
 
 	log.Printf("[chapter] novel %d chapter %d: summary + search index + alias + %d chunks done",
 		ch.NovelID, ch.ChapterNumber, countChunks(ch.Content))
