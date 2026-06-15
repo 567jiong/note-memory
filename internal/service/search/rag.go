@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"note-memory/internal/model"
 	"note-memory/internal/repository"
+	"note-memory/internal/graph"
 	"note-memory/internal/service/entity"
 	"note-memory/internal/service/tools"
 	"strings"
@@ -21,15 +22,17 @@ type RAGService struct {
 	embedder    embedding.Embedder
 	searchSvc   *Service
 	entitySvc   *entity.Service
+	graphReader *graph.GraphReader
 }
 
-func NewRAGService(chapterRepo *repository.ChapterRepo, chatModel einomodel.ToolCallingChatModel, embedder embedding.Embedder, searchSvc *Service, entitySvc *entity.Service) *RAGService {
+func NewRAGService(chapterRepo *repository.ChapterRepo, chatModel einomodel.ToolCallingChatModel, embedder embedding.Embedder, searchSvc *Service, entitySvc *entity.Service, graphReader *graph.GraphReader) *RAGService {
 	return &RAGService{
 		chapterRepo: chapterRepo,
 		chatModel:   chatModel,
 		embedder:    embedder,
 		searchSvc:   searchSvc,
 		entitySvc:   entitySvc,
+		graphReader: graphReader,
 	}
 }
 
@@ -170,12 +173,12 @@ const agenticTopK = 10
 // accumulates context. The agent's final message is the assembled context.
 func (s *RAGService) AgenticRetrieve(ctx context.Context, query string, novelID int64, maxChapter int, novelTitle string) (*AgenticResult, error) {
 	agent, err := newAgenticRAGAgent(ctx, s.chatModel, tools.Deps{
-		NovelID:    novelID,
-		MaxChapter: maxChapter,
-		SearchFunc: s.searchSvc.SearchTool(),
-		EntityFunc: s.entitySvc.EntityTool(),
-		// TimelineFunc / RelationsFunc remain nil — Neo4j not wired into RAGService yet.
-		// The tools gracefully return [] when not available.
+		NovelID:       novelID,
+		MaxChapter:    maxChapter,
+		SearchFunc:    s.searchSvc.SearchTool(),
+		TimelineFunc:  s.graphReader.TimelineTool(),
+		RelationsFunc: s.graphReader.RelationsTool(),
+		EntityFunc:    s.entitySvc.EntityTool(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create agentic rag agent: %w", err)
