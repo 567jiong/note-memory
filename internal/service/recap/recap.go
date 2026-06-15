@@ -69,7 +69,7 @@ func (s *Service) GenerateRecap(ctx context.Context, novelID int64) (string, err
 		retrievedCtx = fmt.Sprintf("小说《%s》\n用户阅读进度：第 %d 章 / 共 %d 章\n\n（检索失败: %v）",
 			novel.Title, currentChapter, novel.TotalChapters, err)
 	} else {
-		fmt.Printf("[recap] Agentic RAG: %d iterations, verified=%v\n", result.Iterations, result.Verified)
+		fmt.Printf("[recap] Agentic RAG completed, verified=%v\n", result.Verified)
 		retrievedCtx = fmt.Sprintf("小说《%s》\n用户阅读进度：第 %d 章 / 共 %d 章\n\n%s",
 			novel.Title, currentChapter, novel.TotalChapters, result.Context)
 	}

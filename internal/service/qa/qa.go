@@ -9,6 +9,7 @@ import (
 	"note-memory/internal/repository"
 	"note-memory/internal/service/entity"
 	"note-memory/internal/service/search"
+	"note-memory/internal/service/tools"
 
 	einomodel "github.com/cloudwego/eino/components/model"
 )
@@ -60,9 +61,9 @@ func (s *Service) AskQuestion(ctx context.Context, novelID int64, question strin
 	maxChapter := progress.CurrentChapter
 	novelTitle := novel.Title
 
-	readingAgent, err := newReadingAgent(ctx, agentConfig{
+	readingAgent, err := newReadingAgent(ctx, readingAgentConfig{
 		ChatModel: s.chatModel,
-		Tools: toolDeps{
+		ToolDeps: tools.Deps{
 			NovelID:    novelID,
 			MaxChapter: maxChapter,
 
@@ -95,9 +96,9 @@ func (s *Service) AskQuestion(ctx context.Context, novelID int64, question strin
 				if err != nil {
 					return "", err
 				}
-				var out []timelineEntry
+				var out []tools.TimelineEntry
 				for _, e := range entries {
-					out = append(out, timelineEntry{Realm: e.Realm, Chapter: e.Chapter, Age: e.Age})
+					out = append(out, tools.TimelineEntry{Realm: e.Realm, Chapter: e.Chapter, Age: e.Age})
 				}
 				b, _ := json.Marshal(out)
 				return string(b), nil
@@ -111,9 +112,9 @@ func (s *Service) AskQuestion(ctx context.Context, novelID int64, question strin
 				if err != nil {
 					return "", err
 				}
-				var out []relationEntry
+				var out []tools.RelationEntry
 				for _, e := range entries {
-					out = append(out, relationEntry{From: e.FromName, To: e.ToName, RelType: e.RelationType, Since: e.SinceChapter, Ended: e.EndedChapter})
+					out = append(out, tools.RelationEntry{From: e.FromName, To: e.ToName, RelType: e.RelationType, Since: e.SinceChapter, Ended: e.EndedChapter})
 				}
 				b, _ := json.Marshal(out)
 				return string(b), nil

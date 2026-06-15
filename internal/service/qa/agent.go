@@ -8,6 +8,8 @@ import (
 	"github.com/cloudwego/eino/compose"
 	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
+
+	"note-memory/internal/service/tools"
 )
 
 // agentInstruction is the system prompt for the Reading Memory ChatModelAgent.
@@ -32,15 +34,15 @@ const agentInstruction = `你是一个小说阅读记忆助手（Reading Memory 
 - 回答简洁、准确，不要编造信息
 - 使用人物的规范名称（而非别名）来回答`
 
-// agentConfig holds dependencies for creating a Reading Memory agent.
-type agentConfig struct {
+// readingAgentConfig holds dependencies for the Reading Memory agent.
+type readingAgentConfig struct {
 	ChatModel einomodel.ToolCallingChatModel
-	Tools     toolDeps
+	ToolDeps  tools.Deps
 }
 
 // newReadingAgent creates a ChatModelAgent for the reading memory use case.
-func newReadingAgent(ctx context.Context, cfg agentConfig) (adk.Agent, error) {
-	tools, err := buildTools(cfg.Tools)
+func newReadingAgent(ctx context.Context, cfg readingAgentConfig) (adk.Agent, error) {
+	t, err := tools.Build(cfg.ToolDeps)
 	if err != nil {
 		return nil, fmt.Errorf("build tools: %w", err)
 	}
@@ -52,7 +54,7 @@ func newReadingAgent(ctx context.Context, cfg agentConfig) (adk.Agent, error) {
 		Model:       cfg.ChatModel,
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{
-				Tools: tools,
+				Tools: t,
 			},
 		},
 		MaxIterations: 8,

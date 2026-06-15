@@ -1,4 +1,4 @@
-package qa
+package tools
 
 import (
 	"context"
@@ -8,19 +8,29 @@ import (
 	"github.com/cloudwego/eino/components/tool/utils"
 )
 
-// toolDeps provides request-scoped dependencies via function closures.
-type toolDeps struct {
+// Deps provides request-scoped dependencies for the four retrieval tools.
+// Each Func can be nil — the corresponding tool will return empty results
+// instead of erroring, so an agent can be created with a subset of tools.
+type Deps struct {
 	NovelID    int64
 	MaxChapter int
 
-	SearchFunc    func(ctx context.Context, query string, novelID int64, maxChapter int, topK int) (string, error)
-	TimelineFunc  func(ctx context.Context, novelID int64, charName string, maxChapter int) (string, error)
+	// SearchFunc performs hybrid search on chapters (pgvector + full-text).
+	SearchFunc func(ctx context.Context, query string, novelID int64, maxChapter int, topK int) (string, error)
+
+	// TimelineFunc queries realm breakthrough timeline from Neo4j.
+	TimelineFunc func(ctx context.Context, novelID int64, charName string, maxChapter int) (string, error)
+
+	// RelationsFunc queries character relationship graph from Neo4j.
 	RelationsFunc func(ctx context.Context, novelID int64, charName string, maxChapter int) (string, error)
-	EntityFunc    func(ctx context.Context, query string, novelID int64, topK int) (string, error)
+
+	// EntityFunc resolves entity aliases/descriptions to canonical names via vector search.
+	EntityFunc func(ctx context.Context, query string, novelID int64, topK int) (string, error)
 }
 
-// buildTools creates the tool set for the Reading Memory Agent.
-func buildTools(deps toolDeps) ([]tool.BaseTool, error) {
+// Build creates the full tool set for a Retrieval / Reading Memory agent.
+// Returns four tools: search_chapters, resolve_entity, query_timeline, query_relations.
+func Build(deps Deps) ([]tool.BaseTool, error) {
 	searchTool, err := newSearchChaptersTool(deps)
 	if err != nil {
 		return nil, fmt.Errorf("create search_chapters tool: %w", err)
@@ -46,12 +56,12 @@ func buildTools(deps toolDeps) ([]tool.BaseTool, error) {
 
 // --- search_chapters ---
 
-func newSearchChaptersTool(deps toolDeps) (tool.InvokableTool, error) {
+func newSearchChaptersTool(deps Deps) (tool.InvokableTool, error) {
 	return utils.InferTool(
 		"search_chapters",
 		"搜索小说章节内容。传入中文关键词，返回相关章节的摘要和匹配文本片段。"+
 			"适合查找：剧情细节、事件经过、物品描述、对话内容。不适合：人物关系、境界查询。",
-		func(ctx context.Context, input *searchChaptersInput) (string, error) {
+		func(ctx context.Context, input *SearchChaptersInput) (string, error) {
 			if deps.SearchFunc == nil {
 				return `[]`, nil
 			}
@@ -62,12 +72,12 @@ func newSearchChaptersTool(deps toolDeps) (tool.InvokableTool, error) {
 
 // --- resolve_entity ---
 
-func newResolveEntityTool(deps toolDeps) (tool.InvokableTool, error) {
+func newResolveEntityTool(deps Deps) (tool.InvokableTool, error) {
 	return utils.InferTool(
 		"resolve_entity",
 		"通过别名、称号或特征描述查找人物的规范名称。"+
 			"当用户使用的称呼不是规范名时（如'韩跑跑''那个拿掌天瓶的'），必须先调用此工具获取规范名，再用规范名查询关系或时间线。",
-		func(ctx context.Context, input *resolveEntityInput) (string, error) {
+		func(ctx context.Context, input *ResolveEntityInput) (string, error) {
 			if deps.EntityFunc == nil {
 				return `{"matched_names":[]}`, nil
 			}
@@ -78,12 +88,12 @@ func newResolveEntityTool(deps toolDeps) (tool.InvokableTool, error) {
 
 // --- query_timeline ---
 
-func newQueryTimelineTool(deps toolDeps) (tool.InvokableTool, error) {
+func newQueryTimelineTool(deps Deps) (tool.InvokableTool, error) {
 	return utils.InferTool(
 		"query_timeline",
 		"查询人物的修炼境界突破时间线。返回每次突破的章节号和年龄。"+
 			"适合回答：'XXX现在什么境界''XXX什么时候突破的筑基期''XXX的修炼历程'。需要提供规范角色名。",
-		func(ctx context.Context, input *queryTimelineInput) (string, error) {
+		func(ctx context.Context, input *QueryTimelineInput) (string, error) {
 			if deps.TimelineFunc == nil {
 				return `[]`, nil
 			}
@@ -94,12 +104,12 @@ func newQueryTimelineTool(deps toolDeps) (tool.InvokableTool, error) {
 
 // --- query_relations ---
 
-func newQueryRelationsTool(deps toolDeps) (tool.InvokableTool, error) {
+func newQueryRelationsTool(deps Deps) (tool.InvokableTool, error) {
 	return utils.InferTool(
 		"query_relations",
 		"查询人物的人际关系网。返回师徒、仇敌、道侣、朋友、宗门归属等关系。"+
 			"适合回答：'XXX和YYY什么关系''XXX有哪些仇敌''XXX的师父是谁'。需要提供规范角色名。",
-		func(ctx context.Context, input *queryRelationsInput) (string, error) {
+		func(ctx context.Context, input *QueryRelationsInput) (string, error) {
 			if deps.RelationsFunc == nil {
 				return `[]`, nil
 			}

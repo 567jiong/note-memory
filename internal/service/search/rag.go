@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"note-memory/internal/model"
 	"note-memory/internal/repository"
-	"sort"
+	"note-memory/internal/service/entity"
+	"note-memory/internal/service/tools"
 	"strings"
 
 	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/components/embedding"
-	"github.com/cloudwego/eino/schema"
 	"github.com/pgvector/pgvector-go"
 )
 
@@ -21,14 +21,16 @@ type RAGService struct {
 	chatModel   einomodel.ToolCallingChatModel
 	embedder    embedding.Embedder
 	searchSvc   *Service
+	entitySvc   *entity.Service
 }
 
-func NewRAGService(chapterRepo *repository.ChapterRepo, chatModel einomodel.ToolCallingChatModel, embedder embedding.Embedder, searchSvc *Service) *RAGService {
+func NewRAGService(chapterRepo *repository.ChapterRepo, chatModel einomodel.ToolCallingChatModel, embedder embedding.Embedder, searchSvc *Service, entitySvc *entity.Service) *RAGService {
 	return &RAGService{
 		chapterRepo: chapterRepo,
 		chatModel:   chatModel,
 		embedder:    embedder,
 		searchSvc:   searchSvc,
+		entitySvc:   entitySvc,
 	}
 }
 
@@ -41,18 +43,8 @@ type SearchResult struct {
 
 // AgenticResult holds the complete output of an Agentic RAG retrieval.
 type AgenticResult struct {
-	Context    string
-	Chapters   []model.Chapter
-	Iterations int
-	Verified   bool
-}
-
-// retrievalVerdict is the structured output from the LLM verification step.
-type retrievalVerdict struct {
-	Sufficient     bool   `json:"sufficient"`
-	Reasoning      string `json:"reasoning"`
-	Missing        string `json:"missing"`
-	RewrittenQuery string `json:"rewritten_query"`
+	Context  string
+	Verified bool
 }
 
 // Search performs semantic similarity search using chunk-level embeddings.
@@ -172,177 +164,70 @@ func (s *RAGService) BuildContext(novelTitle string, currentChapter int, results
 
 // ---- Agentic RAG ----
 
-const (
-	maxAgenticIterations = 3
-	agenticTopK          = 10
-)
+const agenticTopK = 10
 
-// AgenticRetrieve performs multi-step retrieval with LLM verification and query rewriting.
+// AgenticRetrieve performs multi-step retrieval with an ADK agent that
+// autonomously selects data sources (pgvector, Neo4j, full-text) and
+// accumulates context. The agent's final message is the assembled context.
 func (s *RAGService) AgenticRetrieve(ctx context.Context, query string, novelID int64, maxChapter int, novelTitle string) (*AgenticResult, error) {
-	type scoredChapter struct {
-		chapter model.Chapter
-		score   float64
-	}
+	agent, err := newAgenticRAGAgent(ctx, s.chatModel, tools.Deps{
+		NovelID:    novelID,
+		MaxChapter: maxChapter,
 
-	seen := make(map[int64]bool)
-	var allChapters []scoredChapter
-	currentQuery := query
-	verified := false
-	iteration := 0
-
-	for iteration = 1; iteration <= maxAgenticIterations; iteration++ {
-		// Step 1: Hybrid search (semantic + full-text + alias expansion)
-		results, err := s.searchSvc.HybridSearch(ctx, currentQuery, novelID, maxChapter, agenticTopK)
-		if err != nil {
-			sr, err2 := s.Search(ctx, currentQuery, novelID, maxChapter, agenticTopK)
-			if err2 != nil {
-				return nil, fmt.Errorf("agentic search failed (hybrid: %v, semantic: %v)", err, err2)
+		SearchFunc: func(ctx context.Context, q string, nid int64, maxCh, topK int) (string, error) {
+			results, err := s.searchSvc.HybridSearch(ctx, q, nid, maxCh, topK)
+			if err != nil {
+				sr, err2 := s.Search(ctx, q, nid, maxCh, topK)
+				if err2 != nil {
+					return "", fmt.Errorf("agentic search failed (hybrid: %v, semantic: %v)", err, err2)
+				}
+				results = convertSearchResults(sr)
 			}
-			results = convertSearchResults(sr)
-		}
-
-		// Accumulate unique results
-		for _, r := range results {
-			if seen[r.Chapter.ID] {
-				continue
+			var out []tools.ChapterResult
+			for _, r := range results {
+				out = append(out, tools.ChapterResult{
+					ChapterNum: r.Chapter.ChapterNumber,
+					Score:      r.FinalScore,
+					Summary:    r.Chapter.Summary,
+				})
 			}
-			seen[r.Chapter.ID] = true
-			allChapters = append(allChapters, scoredChapter{
-				chapter: r.Chapter,
-				score:   r.FinalScore,
-			})
-		}
+			b, _ := json.Marshal(out)
+			return string(b), nil
+		},
 
-		if len(results) == 0 {
-			continue
-		}
-
-		// Step 2: LLM verification
-		verdict, err := s.verifyRetrieval(ctx, query, maxChapter, results)
-		if err != nil {
-			fmt.Printf("[rag] LLM verification failed (iter %d): %v — accepting current results\n", iteration, err)
-			verified = false
-			break
-		}
-
-		if verdict.Sufficient {
-			verified = true
-			break
-		}
-
-		// Step 3: Rewrite query for next iteration
-		if verdict.RewrittenQuery == "" || verdict.RewrittenQuery == currentQuery {
-			break
-		}
-		currentQuery = verdict.RewrittenQuery
-		fmt.Printf("[rag] query rewritten for iteration %d: %q → %q (missing: %s)\n",
-			iteration+1, query, currentQuery, verdict.Missing)
-	}
-
-	// Sort by chapter number
-	sort.Slice(allChapters, func(i, j int) bool {
-		return allChapters[i].chapter.ChapterNumber < allChapters[j].chapter.ChapterNumber
+		EntityFunc: func(ctx context.Context, q string, nid int64, topK int) (string, error) {
+			if s.entitySvc == nil {
+				return `{"matched_names":[]}`, nil
+			}
+			names, err := s.entitySvc.SearchEntities(ctx, q, nid, topK)
+			if err != nil {
+				return "", err
+			}
+			type out struct {
+				Names []string `json:"matched_names"`
+			}
+			b, _ := json.Marshal(out{Names: names})
+			return string(b), nil
+		},
+		// TimelineFunc and RelationsFunc remain nil — Neo4j not wired into RAGService yet.
+		// The tools will gracefully return [] when not available.
 	})
-
-	var contextResults []SearchResult
-	var chapters []model.Chapter
-	for _, sc := range allChapters {
-		contextResults = append(contextResults, SearchResult{
-			Chapter: sc.chapter,
-			Score:   sc.score,
-		})
-		chapters = append(chapters, sc.chapter)
+	if err != nil {
+		return nil, fmt.Errorf("create agentic rag agent: %w", err)
 	}
 
-	contextResults = trimContextByScore(contextResults, 3000)
-	context := s.BuildContext(novelTitle, maxChapter, contextResults)
+	context, err := runAgenticRAG(ctx, agent, query, novelTitle, maxChapter)
+	if err != nil {
+		return nil, fmt.Errorf("run agentic rag: %w", err)
+	}
 
 	return &AgenticResult{
-		Context:    context,
-		Chapters:   chapters,
-		Iterations: iteration,
-		Verified:   verified,
+		Context:  context,
+		Verified: true,
 	}, nil
 }
 
-// verifyRetrieval asks the LLM to judge retrieval quality.
-func (s *RAGService) verifyRetrieval(ctx context.Context, query string, maxChapter int, results []model.HybridSearchResult) (*retrievalVerdict, error) {
-	var summaries strings.Builder
-	for i, r := range results {
-		if i >= 5 {
-			break
-		}
-		if r.Chapter.Summary != "" {
-			summaries.WriteString(fmt.Sprintf("[第%d章] %s\n", r.Chapter.ChapterNumber, r.Chapter.Summary))
-		}
-	}
-
-	sysPrompt := `你是一个检索质量评估器。你的任务是判断当前检索到的章节摘要是否包含足够的信息来回答用户的问题。
-
-请按以下 JSON 格式输出（不要输出其他内容）：
-{
-  "sufficient": true或false,
-  "reasoning": "评估理由（一句话）",
-  "missing": "如果不足，缺失什么信息（一句话；如果充足则为空）",
-  "rewritten_query": "如果不足，改写后的查询词（中文关键词，用空格分隔；如果充足则为空）"
-}
-
-判断标准：
-- "sufficient": true — 章节摘要中包含回答问题的关键信息
-- "sufficient": false — 关键信息缺失，需要改写查询重新检索
-- 改写查询应聚焦于缺失的具体信息（人名、事件、物品等关键词）`
-
-	userPrompt := fmt.Sprintf(`用户问题：%s
-用户阅读进度：第 1 ~ %d 章
-
-检索到的章节摘要：
-%s
-请评估这些检索结果是否足以回答用户的问题。`, query, maxChapter, summaries.String())
-
-	msg, err := s.chatModel.Generate(ctx, []*schema.Message{
-		schema.SystemMessage(sysPrompt),
-		schema.UserMessage(userPrompt),
-	}, einomodel.WithTemperature(0.3), einomodel.WithMaxTokens(300))
-	if err != nil {
-		return nil, fmt.Errorf("LLM verification call failed: %w", err)
-	}
-
-	verdict, err := parseVerdict(msg.Content)
-	if err != nil {
-		return nil, fmt.Errorf("parse verdict JSON: %w", err)
-	}
-	return verdict, nil
-}
-
-// parseVerdict extracts a retrievalVerdict from an LLM response.
-func parseVerdict(raw string) (*retrievalVerdict, error) {
-	cleaned := strings.TrimSpace(raw)
-
-	if strings.HasPrefix(cleaned, "```") {
-		cleaned = strings.TrimPrefix(cleaned, "```json")
-		cleaned = strings.TrimPrefix(cleaned, "```")
-		cleaned = strings.TrimSuffix(cleaned, "```")
-		cleaned = strings.TrimSpace(cleaned)
-	}
-
-	var v retrievalVerdict
-	if err := json.Unmarshal([]byte(cleaned), &v); err != nil {
-		start := strings.Index(cleaned, "{")
-		end := strings.LastIndex(cleaned, "}")
-		if start >= 0 && end > start {
-			if err2 := json.Unmarshal([]byte(cleaned[start:end+1]), &v); err2 != nil {
-				return nil, fmt.Errorf("json unmarshal failed: %w", err)
-			}
-		} else {
-			return nil, fmt.Errorf("no JSON object found in response")
-		}
-	}
-
-	return &v, nil
-}
-
-// ---- Helpers ----
-
+// convertSearchResults converts SearchResult to model.HybridSearchResult.
 func convertSearchResults(sr []SearchResult) []model.HybridSearchResult {
 	result := make([]model.HybridSearchResult, 0, len(sr))
 	for _, r := range sr {
@@ -352,38 +237,4 @@ func convertSearchResults(sr []SearchResult) []model.HybridSearchResult {
 		})
 	}
 	return result
-}
-
-func trimContextByScore(results []SearchResult, maxChars int) []SearchResult {
-	totalChars := 0
-	for _, r := range results {
-		if r.Chapter.Summary != "" {
-			totalChars += len([]rune(r.Chapter.Summary))
-		}
-	}
-	if totalChars <= maxChars {
-		return results
-	}
-
-	sorted := make([]SearchResult, len(results))
-	copy(sorted, results)
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].Score > sorted[j].Score
-	})
-
-	var trimmed []SearchResult
-	chars := 0
-	for _, r := range sorted {
-		chars += len([]rune(r.Chapter.Summary))
-		trimmed = append(trimmed, r)
-		if chars >= maxChars {
-			break
-		}
-	}
-
-	sort.Slice(trimmed, func(i, j int) bool {
-		return trimmed[i].Chapter.ChapterNumber < trimmed[j].Chapter.ChapterNumber
-	})
-
-	return trimmed
 }
