@@ -19,16 +19,17 @@ import (
 
 // ChapterService handles AI-powered chapter analysis.
 type ChapterService struct {
-	chapterRepo *repository.ChapterRepo
-	chatModel   einomodel.ToolCallingChatModel
-	embedder    embedding.Embedder
-	ragSvc      *RAGService
-	searchSvc   *SearchService
-	graphWriter *graph.GraphWriter
-	concurrency int
+	chapterRepo  *repository.ChapterRepo
+	chatModel    einomodel.ToolCallingChatModel
+	embedder     embedding.Embedder
+	ragSvc       *RAGService
+	searchSvc    *SearchService
+	graphWriter  *graph.GraphWriter
+	entitySvc    *EntityService
+	concurrency  int
 }
 
-func NewChapterService(chapterRepo *repository.ChapterRepo, chatModel einomodel.ToolCallingChatModel, embedder embedding.Embedder, ragSvc *RAGService, searchSvc *SearchService, graphWriter *graph.GraphWriter) *ChapterService {
+func NewChapterService(chapterRepo *repository.ChapterRepo, chatModel einomodel.ToolCallingChatModel, embedder embedding.Embedder, ragSvc *RAGService, searchSvc *SearchService, graphWriter *graph.GraphWriter, entitySvc *EntityService) *ChapterService {
 	return &ChapterService{
 		chapterRepo: chapterRepo,
 		chatModel:   chatModel,
@@ -36,6 +37,7 @@ func NewChapterService(chapterRepo *repository.ChapterRepo, chatModel einomodel.
 		ragSvc:      ragSvc,
 		searchSvc:   searchSvc,
 		graphWriter:  graphWriter,
+		entitySvc:   entitySvc,
 		concurrency: 3,
 	}
 }
@@ -80,8 +82,14 @@ func (s *ChapterService) summarizeChapter(ctx context.Context, ch *model.Chapter
 	sysPrompt := `你是一个小说分析助手。请根据提供的章节内容完成以下任务：
 
 1. 用 2-3 句话总结本章主要情节。
-2. 提取本章出现的主要人物。只提取有明确姓名或固定称呼的角色，不要提取"黄脸修士""中年儒生""师兄"之类的外貌描述或泛称角色。以 JSON 数组格式返回：
-   [{"name":"人物名","aliases":["别名"],"status":"本章中的状态或变化","first_appearance":章节号}]
+2. 提取本章出现的主要人物。只提取有明确姓名或固定称呼的角色，不要提取"黄脸修士""中年儒生""师兄"之类的外貌描述或泛称角色。以 JSON 数组格式返回。每个人物包含以下字段：
+   - name: 人物名
+   - aliases: 别名数组
+   - status: 本章中的状态或变化
+   - realm: 当前修炼境界名称（如"筑基期""元婴期"，根据文中描述推断，没有则为空字符串）
+   - realm_level: 境界等级数字（练气=1, 筑基=2, 金丹=3, 元婴=4, 化神=5, 炼虚=6, 合体=7, 大乘=8, 渡劫=9, 真仙=10, 金仙=11, 太乙=12, 大罗=13, 道祖=14。非修仙小说则填0）
+   - first_appearance: 章节号
+   格式：[{"name":"人物名","aliases":["别名"],"status":"状态","realm":"境界名","realm_level":数字,"first_appearance":章节号}]
 3. 提取本章的关键事件，以 JSON 数组格式返回：
    [{"title":"事件名","participants":["人物名"],"summary":"事件简述","impact":"影响","chapter_num":章节号}]
 
@@ -127,6 +135,15 @@ func (s *ChapterService) summarizeChapter(ctx context.Context, ch *model.Chapter
 	// Sync to Neo4j knowledge graph (novel title/author set by first sync)
 	if s.graphWriter != nil && s.graphWriter.IsEnabled() {
 		_ = s.graphWriter.SyncChapter(ctx, &model.Novel{ID: ch.NovelID}, ch, charsJSON, eventsJSON)
+	}
+
+	// Generate/update entity embeddings for semantic alias matching
+	if s.entitySvc != nil {
+		for _, c := range charsJSON {
+			if err := s.entitySvc.UpsertEntityFromChapter(ctx, ch.NovelID, c); err != nil {
+				log.Printf("[chapter] entity embedding error for %s: %v", c.Name, err)
+			}
+		}
 	}
 
 	log.Printf("[chapter] novel %d chapter %d: summary + search index + alias + %d chunks done",

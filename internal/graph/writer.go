@@ -101,13 +101,17 @@ func (w *GraphWriter) syncCharacter(ctx context.Context, s neo4j.Session, novelI
 		"age":       extractAge(char.Status),
 	})
 
-	// Detect realm breakthroughs
-	if realm := detectRealmChange(char.Status); realm != "" {
-		w.syncRealmBreakthrough(ctx, s, novelID, char.Name, chapterNum, realm, extractAge(char.Status))
+	// Sync realm breakthrough (uses LLM-extracted realm from CharacterInfo)
+	if char.Realm != "" {
+		level := char.RealmLevel
+		if level == 0 {
+			level = realmLevel(char.Realm) // fallback: try to infer level from realm name
+		}
+		w.syncRealmBreakthrough(ctx, s, novelID, char.Name, chapterNum, char.Realm, level, extractAge(char.Status))
 	}
 }
 
-func (w *GraphWriter) syncRealmBreakthrough(ctx context.Context, s neo4j.Session, novelID int64, charName string, chapterNum int, realm string, age int) {
+func (w *GraphWriter) syncRealmBreakthrough(ctx context.Context, s neo4j.Session, novelID int64, charName string, chapterNum int, realm string, level int, age int) {
 	s.Run(ctx, `
 		MERGE (r:Realm {novel_id: $novelId, name: $realm})
 		  ON CREATE SET r.level = $level
@@ -118,7 +122,7 @@ func (w *GraphWriter) syncRealmBreakthrough(ctx context.Context, s neo4j.Session
 	`, map[string]any{
 		"novelId":   novelID,
 		"realm":     realm,
-		"level":     realmLevel(realm),
+		"level":     level,
 		"name":      charName,
 		"chapterNum": chapterNum,
 		"age":       age,
@@ -160,35 +164,8 @@ func (w *GraphWriter) syncEvent(ctx context.Context, s neo4j.Session, novelID in
 
 // ---- Detection helpers ----
 
-var realmPatterns = []struct {
-	pattern *regexp.Regexp
-	realm   string
-}{
-	{regexp.MustCompile(`练气`), "练气期"},
-	{regexp.MustCompile(`筑基`), "筑基期"},
-	{regexp.MustCompile(`金丹|结丹`), "金丹期"},
-	{regexp.MustCompile(`元婴`), "元婴期"},
-	{regexp.MustCompile(`化神`), "化神期"},
-	{regexp.MustCompile(`炼虚`), "炼虚期"},
-	{regexp.MustCompile(`合体`), "合体期"},
-	{regexp.MustCompile(`大乘`), "大乘期"},
-	{regexp.MustCompile(`渡劫`), "渡劫期"},
-	{regexp.MustCompile(`真仙`), "真仙境"},
-	{regexp.MustCompile(`金仙`), "金仙境"},
-	{regexp.MustCompile(`太乙`), "太乙境"},
-	{regexp.MustCompile(`大罗`), "大罗境"},
-	{regexp.MustCompile(`道祖`), "道祖境"},
-}
-
-func detectRealmChange(status string) string {
-	for _, rp := range realmPatterns {
-		if rp.pattern.MatchString(status) {
-			return rp.realm
-		}
-	}
-	return ""
-}
-
+// realmLevel maps a realm name to its numeric level.
+// Used as a fallback when LLM doesn't provide realm_level.
 func realmLevel(realm string) int {
 	switch realm {
 	case "练气期":

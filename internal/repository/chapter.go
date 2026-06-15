@@ -398,3 +398,45 @@ func (r *ChapterRepo) ListChunksWithoutEmbedding(novelID int64, limit int) ([]mo
 		Order("id ASC").Limit(limit).Find(&chunks).Error
 	return chunks, err
 }
+
+// --- Entity Embeddings ---
+
+// UpsertEntityEmbedding inserts or updates an entity vector record.
+func (r *ChapterRepo) UpsertEntityEmbedding(ent *model.EntityEmbedding) error {
+	return r.db.Where("novel_id = ? AND entity_name = ?", ent.NovelID, ent.EntityName).
+		Assign(map[string]any{
+			"entity_type": ent.EntityType,
+			"description": ent.Description,
+			"embedding":   ent.Embedding,
+			"updated_at":  ent.UpdatedAt,
+		}).
+		FirstOrCreate(ent).Error
+}
+
+// SearchEntityEmbeddings performs cosine similarity search on entity embeddings.
+// Returns top-K entities ordered by similarity.
+func (r *ChapterRepo) SearchEntityEmbeddings(novelID int64, vec pgvector.Vector, topK int) ([]model.EntityEmbedding, error) {
+	var entities []model.EntityEmbedding
+	err := r.db.Raw(`
+		SELECT id, novel_id, entity_name, entity_type, description,
+		       created_at, updated_at
+		FROM entity_embeddings
+		WHERE novel_id = ? AND embedding IS NOT NULL
+		ORDER BY embedding <=> ?
+		LIMIT ?
+	`, novelID, vec, topK).Scan(&entities).Error
+	return entities, err
+}
+
+// ListEntitiesWithoutEmbedding returns entities missing vector embeddings.
+func (r *ChapterRepo) ListEntitiesWithoutEmbedding(novelID int64, limit int) ([]model.EntityEmbedding, error) {
+	var entities []model.EntityEmbedding
+	err := r.db.Where("novel_id = ? AND embedding IS NULL", novelID).
+		Order("id ASC").Limit(limit).Find(&entities).Error
+	return entities, err
+}
+
+// DeleteEntityEmbeddingsByNovel removes all entity embeddings for a novel.
+func (r *ChapterRepo) DeleteEntityEmbeddingsByNovel(novelID int64) error {
+	return r.db.Where("novel_id = ?", novelID).Delete(&model.EntityEmbedding{}).Error
+}

@@ -95,6 +95,22 @@ type ChapterChunk struct {
 
 func (ChapterChunk) TableName() string { return "chapter_chunks" }
 
+// EntityEmbedding stores a rich description + vector for semantic entity matching.
+// Unlike entity_aliases (exact string match), this allows finding "韩立" when searching
+// for "韩跑跑" or "掌天瓶持有者" via cosine similarity.
+type EntityEmbedding struct {
+	ID         int64           `json:"id" gorm:"primaryKey;autoIncrement"`
+	NovelID    int64           `json:"novel_id" gorm:"uniqueIndex:idx_entity_emb_novel_name"`
+	EntityName string          `json:"entity_name" gorm:"type:varchar(200);uniqueIndex:idx_entity_emb_novel_name"`
+	EntityType string          `json:"entity_type" gorm:"type:varchar(50);not null;default:'character'"`
+	Description string         `json:"description" gorm:"type:text;not null"`
+	Embedding  *pgvector.Vector `json:"-" gorm:"type:vector(1024)"`
+	CreatedAt  time.Time       `json:"created_at"`
+	UpdatedAt  time.Time       `json:"updated_at"`
+}
+
+func (EntityEmbedding) TableName() string { return "entity_embeddings" }
+
 // AliasInfo holds canonical name and all its aliases (for search expansion).
 type AliasInfo struct {
 	Name    string   `json:"name"`
@@ -112,10 +128,12 @@ type HybridSearchResult struct {
 // --- Character / Event structs for JSONB serialization ---
 
 type CharacterInfo struct {
-	Name           string   `json:"name"`
-	Aliases        []string `json:"aliases,omitempty"`
-	Status         string   `json:"status,omitempty"`
-	FirstAppearance int     `json:"first_appearance,omitempty"`
+	Name            string   `json:"name"`
+	Aliases         []string `json:"aliases,omitempty"`
+	Status          string   `json:"status,omitempty"`
+	Realm           string   `json:"realm,omitempty"`            // LLM-extracted realm name (e.g. "筑基期")
+	RealmLevel      int      `json:"realm_level,omitempty"`      // LLM-inferred numeric level
+	FirstAppearance int      `json:"first_appearance,omitempty"`
 }
 
 type EventInfo struct {

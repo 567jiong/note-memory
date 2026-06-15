@@ -21,6 +21,7 @@ import (
 type SearchService struct {
 	chapterRepo *repository.ChapterRepo
 	embedder    embedding.Embedder
+	entitySvc   *EntityService
 
 	// jieba segmenter (lazy init, thread-safe after first use)
 	segmenter *gse.Segmenter
@@ -31,10 +32,11 @@ type SearchService struct {
 	novelDict map[int64]string // novelID → custom dict file path
 }
 
-func NewSearchService(chapterRepo *repository.ChapterRepo, embedder embedding.Embedder) *SearchService {
+func NewSearchService(chapterRepo *repository.ChapterRepo, embedder embedding.Embedder, entitySvc *EntityService) *SearchService {
 	return &SearchService{
 		chapterRepo: chapterRepo,
 		embedder:    embedder,
+		entitySvc:   entitySvc,
 		novelDict:   make(map[int64]string),
 	}
 }
@@ -379,7 +381,16 @@ func (s *SearchService) HybridSearch(ctx context.Context, query string, novelID 
 		topK = 10
 	}
 
-	// 1. Expand query with alias resolution
+	// 1a. Expand query with entity embedding semantic match (new)
+	if s.entitySvc != nil {
+		entities, err := s.entitySvc.SearchEntities(ctx, query, novelID, 3)
+		if err == nil && len(entities) > 0 {
+			// Append matched entity names to the query for broader recall
+			query = query + " " + strings.Join(entities, " ")
+		}
+	}
+
+	// 1b. Expand query with alias resolution (fallback)
 	expandedQuery := s.expandWithAliases(query, novelID)
 
 	// 2. Tokenize query for full-text search (jieba + custom dict)

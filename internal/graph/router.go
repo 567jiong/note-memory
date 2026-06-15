@@ -23,9 +23,15 @@ type QueryContext struct {
 }
 
 // RouteQuery classifies a question and enriches it with graph data if applicable.
-// Returns the enriched context string to inject into the LLM prompt.
+// Deprecated: prefer RouteQueryWithClass when the question has already been classified by LLM.
 func RouteQuery(ctx context.Context, reader *GraphReader, question string, novelID int64, charName string, maxChapter int) (*QueryContext, QueryClass) {
 	class := classify(question)
+	return RouteQueryWithClass(ctx, reader, novelID, charName, maxChapter, class)
+}
+
+// RouteQueryWithClass enriches context with graph data using a pre-determined query class.
+// Use this when the question has already been classified by LLM routing.
+func RouteQueryWithClass(ctx context.Context, reader *GraphReader, novelID int64, charName string, maxChapter int, class QueryClass) (*QueryContext, QueryClass) {
 	qc := &QueryContext{}
 
 	if !reader.IsEnabled() {

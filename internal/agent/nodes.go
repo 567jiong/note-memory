@@ -22,8 +22,8 @@ type GraphDeps struct {
 	ChatModel   einomodel.ToolCallingChatModel
 }
 
-// classifyQuestion determines the query type based on simple keyword matching.
-// Future: replace with LLM-based classification via a ChatModel node.
+// classifyQuestion is the fallback keyword-based classifier.
+// Used when LLM routing is unavailable or fails.
 func classifyQuestion(question string) QueryClass {
 	q := strings.ToLower(question)
 
@@ -56,21 +56,128 @@ func classifyQuestion(question string) QueryClass {
 	return QueryFact
 }
 
+// --- LLM Router ---
+
+// routeDecision is the structured output from the LLM routing step.
+type routeDecision struct {
+	Source            string   `json:"source"`             // "pgvector" | "neo4j" | "both"
+	QueryType         string   `json:"query_type"`         // "fact" | "timeline" | "relation" | "mixed"
+	ExtractedEntities []string `json:"extracted_entities"` // entity names mentioned in question
+	SearchQuery       string   `json:"search_query"`       // optimized search query
+	Reasoning         string   `json:"reasoning"`          // brief explanation
+}
+
+const llmRoutePrompt = `你是一个查询路由器。根据用户的问题，决定应该查询哪个数据源。
+
+## 数据源说明
+- pgvector: 存储章节内容和实体描述，擅长剧情细节、事件经过、对话内容、物品描述、通过别名找人物
+- neo4j: 存储结构化知识图谱，擅长人物关系（师徒/敌对/道侣）、境界突破时间线、宗门归属、物品传承链
+
+## 路由规则
+- "韩立有哪些仇敌" → neo4j（查关系网）
+- "掌天瓶是什么" → pgvector（查物品描述）
+- "韩立什么时候突破的筑基期" → neo4j（查时间线）
+- "韩立和墨大夫之间发生了什么" → both（关系+剧情都需要）
+- "韩立现在什么修为" → neo4j（境界信息）
+- "韩跑跑是谁" → pgvector（entity embedding 语义匹配别名）
+- "最近有什么重要事件" → pgvector（语义搜索章节）
+
+## 输出格式
+严格输出 JSON（不要额外文字）：
+{
+  "source": "pgvector|neo4j|both",
+  "query_type": "fact|timeline|relation|mixed",
+  "extracted_entities": ["实体名1", "实体名2"],
+  "search_query": "优化后的搜索关键词（中文，空格分隔）",
+  "reasoning": "一句话说明选择原因"
+}`
+
+// llmRoute uses the LLM to decide the query routing.
+// Falls back to keyword-based classification on failure.
+func (d *GraphDeps) llmRoute(ctx context.Context, question string) routeDecision {
+	msg, err := d.ChatModel.Generate(ctx, []*schema.Message{
+		schema.SystemMessage(llmRoutePrompt),
+		schema.UserMessage(question),
+	}, einomodel.WithTemperature(0.2), einomodel.WithMaxTokens(300))
+	if err != nil {
+		return fallbackRoute(question)
+	}
+
+	var decision routeDecision
+	cleaned := strings.TrimSpace(msg.Content)
+	if strings.HasPrefix(cleaned, "```") {
+		cleaned = strings.TrimPrefix(cleaned, "```json")
+		cleaned = strings.TrimPrefix(cleaned, "```")
+		cleaned = strings.TrimSuffix(cleaned, "```")
+		cleaned = strings.TrimSpace(cleaned)
+	}
+	if err := json.Unmarshal([]byte(cleaned), &decision); err != nil {
+		// Try extracting from {...}
+		start := strings.Index(cleaned, "{")
+		end := strings.LastIndex(cleaned, "}")
+		if start >= 0 && end > start {
+			if json.Unmarshal([]byte(cleaned[start:end+1]), &decision) != nil {
+				return fallbackRoute(question)
+			}
+		} else {
+			return fallbackRoute(question)
+		}
+	}
+
+	return decision
+}
+
+// fallbackRoute returns a route decision based on keyword matching.
+func fallbackRoute(question string) routeDecision {
+	qc := classifyQuestion(question)
+	source := "pgvector"
+	if qc == QueryTimeline || qc == QueryRelation {
+		source = "neo4j"
+	} else if qc == QueryMixed {
+		source = "both"
+	}
+	return routeDecision{
+		Source:    source,
+		QueryType: string(qc),
+		Reasoning: "关键词降级路由",
+	}
+}
+
 // ---- Router Node ----
 
-// routerNode classifies the question and sets QueryClass on the state.
+// routerNode classifies the question via LLM and sets routing fields on state.
 func (d *GraphDeps) routerNode(ctx context.Context, s *ReadingAgentState) (*ReadingAgentState, error) {
-	s.QueryClass = string(classifyQuestion(s.Question))
+	decision := d.llmRoute(ctx, s.Question)
+
+	s.QueryClass = decision.QueryType
+	if s.QueryClass == "" {
+		s.QueryClass = string(QueryFact)
+	}
+
+	// If LLM provided an optimized search query, use it
+	if decision.SearchQuery != "" {
+		s.SearchQuery = decision.SearchQuery
+	}
+
+	// Store extracted entities for downstream use
+	if len(decision.ExtractedEntities) > 0 {
+		fmt.Printf("[agent] LLM route: source=%s entities=%v query=%q\n",
+			decision.Source, decision.ExtractedEntities, decision.SearchQuery)
+	}
+
 	return s, nil
 }
 
-// classifyBranch routes to the appropriate retrieval node based on query class.
+// classifyBranch routes based on LLM decision source field.
 func (d *GraphDeps) classifyBranch(ctx context.Context, s *ReadingAgentState) (string, error) {
-	switch QueryClass(s.QueryClass) {
+	// Re-run classification to get source (routerNode already set QueryClass but not source)
+	// For efficiency, we derive source from QueryClass set by routerNode
+	qc := QueryClass(s.QueryClass)
+	switch qc {
 	case QueryTimeline, QueryRelation:
 		return "graph", nil
 	case QueryMixed:
-		return "search", nil // mixed: search first, graph enriches later
+		return "search", nil
 	default:
 		return "search", nil
 	}
@@ -115,7 +222,27 @@ func (d *GraphDeps) graphNode(ctx context.Context, s *ReadingAgentState) (*Readi
 		return s, nil
 	}
 
-	graphCtx, _ := graph.RouteQuery(ctx, d.GraphReader, s.Question, s.NovelID, "主角", s.MaxChapter)
+	// Use LLM routing result for query class
+	var qc graph.QueryClass
+	switch QueryClass(s.QueryClass) {
+	case QueryTimeline:
+		qc = graph.QueryTimeline
+	case QueryRelation:
+		qc = graph.QueryRelation
+	case QueryMixed:
+		qc = graph.QueryMixed
+	default:
+		qc = graph.QueryFact
+	}
+
+	// Use first extracted entity as character name, fallback to "主角"
+	charName := "主角"
+	if len(s.SearchQuery) > 0 && s.SearchQuery != s.Question {
+		// SearchQuery from LLM route contains extracted entity names
+		charName = s.SearchQuery
+	}
+
+	graphCtx, _ := graph.RouteQueryWithClass(ctx, d.GraphReader, s.NovelID, charName, s.MaxChapter, qc)
 	s.GraphTimeline = graphCtx.RealmTimeline
 	s.GraphRelations = graphCtx.Relations
 	s.GraphStatus = graphCtx.StatusChanges
