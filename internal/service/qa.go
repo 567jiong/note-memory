@@ -3,11 +3,17 @@ package service
 import (
 	"context"
 	"fmt"
-	"note-memory/internal/ai"
 	"note-memory/internal/graph"
 	"note-memory/internal/model"
 	"note-memory/internal/repository"
+
+	einomodel "github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/schema"
 )
+
+// AgentInvoker is a function that runs the agent graph and returns a final answer.
+// It abstracts the Eino graph behind a plain function to avoid import cycles.
+type AgentInvoker func(ctx context.Context, novelID int64, maxChapter int, novelTitle, question string) (string, error)
 
 // QAService handles spoiler-free question answering.
 type QAService struct {
@@ -15,9 +21,12 @@ type QAService struct {
 	chapterRepo  *repository.ChapterRepo
 	progressRepo *repository.ProgressRepo
 	ragSvc       *RAGService
-	aiClient     *ai.Client
+	chatModel    einomodel.ToolCallingChatModel
 	searchSvc    *SearchService
 	graphReader  *graph.GraphReader
+
+	// agentInvoker is the Eino graph entry point (nil = use fallback path)
+	agentInvoker AgentInvoker
 }
 
 func NewQAService(
@@ -25,7 +34,7 @@ func NewQAService(
 	chapterRepo *repository.ChapterRepo,
 	progressRepo *repository.ProgressRepo,
 	ragSvc *RAGService,
-	aiClient *ai.Client,
+	chatModel einomodel.ToolCallingChatModel,
 	searchSvc *SearchService,
 	graphReader *graph.GraphReader,
 ) *QAService {
@@ -34,13 +43,20 @@ func NewQAService(
 		chapterRepo:  chapterRepo,
 		progressRepo: progressRepo,
 		ragSvc:       ragSvc,
-		aiClient:     aiClient,
+		chatModel:    chatModel,
 		searchSvc:    searchSvc,
 		graphReader:  graphReader,
 	}
 }
 
+// SetAgentInvoker injects the Eino agent graph via a plain function to avoid import cycles.
+// When nil, AskQuestion falls back to the legacy AgenticRetrieve + RouteQuery path.
+func (s *QAService) SetAgentInvoker(invoker AgentInvoker) {
+	s.agentInvoker = invoker
+}
+
 // AskQuestion answers a user question about the novel, strictly within the spoiler-free boundary.
+// Uses the Eino agent graph when available; falls back to the legacy AgenticRAG + RouteQuery path.
 func (s *QAService) AskQuestion(ctx context.Context, novelID int64, question string) (string, error) {
 	novel, err := s.novelRepo.GetByID(novelID)
 	if err != nil {
@@ -53,6 +69,17 @@ func (s *QAService) AskQuestion(ctx context.Context, novelID int64, question str
 	}
 
 	currentChapter := progress.CurrentChapter
+
+	// Prefer Eino agent graph path
+	if s.agentInvoker != nil {
+		answer, err := s.agentInvoker(ctx, novelID, currentChapter, novel.Title, question)
+		if err != nil {
+			return "", fmt.Errorf("agent graph: %w", err)
+		}
+		return answer, nil
+	}
+
+	// === Fallback: legacy AgenticRAG + RouteQuery path ===
 
 	// Agentic RAG: multi-step retrieval → verify → rewrite → re-retrieve
 	result, err := s.ragSvc.AgenticRetrieve(ctx, question, novelID, currentChapter, novel.Title)
@@ -92,15 +119,15 @@ func (s *QAService) AskQuestion(ctx context.Context, novelID int64, question str
 
 	userPrompt := fmt.Sprintf("用户提问：%s\n\n请根据上下文回答。如果信息不足，请明确说明。", question)
 
-	answer, err := s.aiClient.Chat(ctx, []ai.Message{
-		{Role: "system", Content: sysPrompt},
-		{Role: "user", Content: userPrompt},
-	}, 0.5, 1000)
+	msg, err := s.chatModel.Generate(ctx, []*schema.Message{
+		schema.SystemMessage(sysPrompt),
+		schema.UserMessage(userPrompt),
+	}, einomodel.WithTemperature(0.5), einomodel.WithMaxTokens(1000))
 	if err != nil {
 		return "", fmt.Errorf("generate answer: %w", err)
 	}
 
-	return answer, nil
+	return msg.Content, nil
 }
 
 // SearchChapters performs semantic search and returns formatted results.

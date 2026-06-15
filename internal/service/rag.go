@@ -4,26 +4,30 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"note-memory/internal/ai"
 	"note-memory/internal/model"
 	"note-memory/internal/repository"
 	"sort"
 	"strings"
 
+	einomodel "github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/components/embedding"
+	"github.com/cloudwego/eino/schema"
 	"github.com/pgvector/pgvector-go"
 )
 
 // RAGService provides semantic search and context assembly for novels.
 type RAGService struct {
 	chapterRepo *repository.ChapterRepo
-	aiClient    *ai.Client
+	chatModel   einomodel.ToolCallingChatModel
+	embedder    embedding.Embedder
 	searchSvc   *SearchService
 }
 
-func NewRAGService(chapterRepo *repository.ChapterRepo, aiClient *ai.Client, searchSvc *SearchService) *RAGService {
+func NewRAGService(chapterRepo *repository.ChapterRepo, chatModel einomodel.ToolCallingChatModel, embedder embedding.Embedder, searchSvc *SearchService) *RAGService {
 	return &RAGService{
 		chapterRepo: chapterRepo,
-		aiClient:    aiClient,
+		chatModel:   chatModel,
+		embedder:    embedder,
 		searchSvc:   searchSvc,
 	}
 }
@@ -59,9 +63,17 @@ func (s *RAGService) Search(ctx context.Context, query string, novelID int64, ma
 		topK = 10
 	}
 
-	queryVec, err := s.aiClient.Embedding(ctx, query)
+	vecs, err := s.embedder.EmbedStrings(ctx, []string{query})
 	if err != nil {
 		return nil, fmt.Errorf("embed query: %w", err)
+	}
+	if len(vecs) == 0 {
+		return nil, fmt.Errorf("embed query: empty result")
+	}
+	// Convert float64 → float32 for pgvector
+	queryVec := make([]float32, len(vecs[0]))
+	for i, v := range vecs[0] {
+		queryVec[i] = float32(v)
 	}
 
 	vec := pgvector.NewVector(queryVec)
@@ -292,15 +304,15 @@ func (s *RAGService) verifyRetrieval(ctx context.Context, query string, maxChapt
 %s
 请评估这些检索结果是否足以回答用户的问题。`, query, maxChapter, summaries.String())
 
-	resp, err := s.aiClient.Chat(ctx, []ai.Message{
-		{Role: "system", Content: sysPrompt},
-		{Role: "user", Content: userPrompt},
-	}, 0.3, 300)
+	msg, err := s.chatModel.Generate(ctx, []*schema.Message{
+		schema.SystemMessage(sysPrompt),
+		schema.UserMessage(userPrompt),
+	}, einomodel.WithTemperature(0.3), einomodel.WithMaxTokens(300))
 	if err != nil {
 		return nil, fmt.Errorf("LLM verification call failed: %w", err)
 	}
 
-	verdict, err := parseVerdict(resp)
+	verdict, err := parseVerdict(msg.Content)
 	if err != nil {
 		return nil, fmt.Errorf("parse verdict JSON: %w", err)
 	}

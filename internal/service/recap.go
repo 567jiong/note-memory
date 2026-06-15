@@ -3,8 +3,10 @@ package service
 import (
 	"context"
 	"fmt"
-	"note-memory/internal/ai"
 	"note-memory/internal/repository"
+
+	"github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/schema"
 )
 
 // RecapService generates reading recovery recaps.
@@ -13,7 +15,7 @@ type RecapService struct {
 	chapterRepo  *repository.ChapterRepo
 	progressRepo *repository.ProgressRepo
 	recapRepo    *repository.RecapRepo
-	aiClient     *ai.Client
+	chatModel    model.ToolCallingChatModel
 	ragSvc       *RAGService
 }
 
@@ -22,7 +24,7 @@ func NewRecapService(
 	chapterRepo *repository.ChapterRepo,
 	progressRepo *repository.ProgressRepo,
 	recapRepo *repository.RecapRepo,
-	aiClient *ai.Client,
+	chatModel model.ToolCallingChatModel,
 	ragSvc *RAGService,
 ) *RecapService {
 	return &RecapService{
@@ -30,7 +32,7 @@ func NewRecapService(
 		chapterRepo:  chapterRepo,
 		progressRepo: progressRepo,
 		recapRepo:    recapRepo,
-		aiClient:     aiClient,
+		chatModel:    chatModel,
 		ragSvc:       ragSvc,
 	}
 }
@@ -94,13 +96,15 @@ func (s *RecapService) GenerateRecap(ctx context.Context, novelID int64) (string
 
 请严格按照以上格式输出。`, novel.Title, currentChapter, currentChapter, currentChapter+1, currentChapter, currentChapter, currentChapter)
 
-	resp, err := s.aiClient.Chat(ctx, []ai.Message{
-		{Role: "system", Content: sysPrompt},
-		{Role: "user", Content: retrievedCtx},
-	}, 0.7, 2000)
+	msg, err := s.chatModel.Generate(ctx, []*schema.Message{
+		schema.SystemMessage(sysPrompt),
+		schema.UserMessage(retrievedCtx),
+	}, model.WithTemperature(0.7), model.WithMaxTokens(2000))
 	if err != nil {
 		return "", fmt.Errorf("generate recap: %w", err)
 	}
+
+	resp := msg.Content
 
 	// Cache the result
 	if err := s.recapRepo.Upsert(novelID, currentChapter, resp); err != nil {

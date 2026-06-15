@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"note-memory/internal/ai"
 	"note-memory/internal/parser"
 	"strings"
+
+	"github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/schema"
 )
 
 // llmMetaResult is the structured output expected from the LLM.
@@ -42,7 +44,7 @@ func extractMetaText(content string) string {
 
 // llmExtractMeta uses LLM to extract novel metadata with retry-and-validate loop.
 // Falls back to regex parser on failure.
-func llmExtractMeta(ctx context.Context, aiClient *ai.Client, content string) (title, author string) {
+func llmExtractMeta(ctx context.Context, chatModel model.ToolCallingChatModel, content string) (title, author string) {
 	metaText := extractMetaText(content)
 	if strings.TrimSpace(metaText) == "" {
 		return parser.DetectNovelMeta(content).Title, parser.DetectNovelMeta(content).Author
@@ -74,14 +76,16 @@ func llmExtractMeta(ctx context.Context, aiClient *ai.Client, content string) (t
 			userPrompt += fmt.Sprintf("\n\n## 上次提取错误，请修正：%s", strings.Join(lastErrors, "; "))
 		}
 
-		resp, err := aiClient.Chat(ctx, []ai.Message{
-			{Role: "system", Content: sysPrompt},
-			{Role: "user", Content: userPrompt},
-		}, 0.2, 300)
+		msg, err := chatModel.Generate(ctx, []*schema.Message{
+			schema.SystemMessage(sysPrompt),
+			schema.UserMessage(userPrompt),
+		}, model.WithTemperature(0.2), model.WithMaxTokens(300))
 		if err != nil {
 			log.Printf("[meta] LLM call attempt %d failed: %v", attempt, err)
 			continue
 		}
+
+		resp := msg.Content
 
 		var result llmMetaResult
 		if err := json.Unmarshal([]byte(cleanJSON(resp)), &result); err != nil {

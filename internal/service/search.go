@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"fmt"
-	"note-memory/internal/ai"
 	"note-memory/internal/model"
 	"note-memory/internal/repository"
 	"os"
@@ -13,6 +12,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"github.com/cloudwego/eino/components/embedding"
 	"github.com/go-ego/gse"
 	"github.com/pgvector/pgvector-go"
 )
@@ -20,7 +20,7 @@ import (
 // SearchService provides hybrid search with jieba tokenization.
 type SearchService struct {
 	chapterRepo *repository.ChapterRepo
-	aiClient    *ai.Client
+	embedder    embedding.Embedder
 
 	// jieba segmenter (lazy init, thread-safe after first use)
 	segmenter *gse.Segmenter
@@ -31,10 +31,10 @@ type SearchService struct {
 	novelDict map[int64]string // novelID → custom dict file path
 }
 
-func NewSearchService(chapterRepo *repository.ChapterRepo, aiClient *ai.Client) *SearchService {
+func NewSearchService(chapterRepo *repository.ChapterRepo, embedder embedding.Embedder) *SearchService {
 	return &SearchService{
 		chapterRepo: chapterRepo,
-		aiClient:    aiClient,
+		embedder:    embedder,
 		novelDict:   make(map[int64]string),
 	}
 }
@@ -387,9 +387,13 @@ func (s *SearchService) HybridSearch(ctx context.Context, query string, novelID 
 	tsQuery := s.tokenizeForQuery(expandedQuery, customDict)
 
 	// 3. Try to generate query embedding; fall back to full-text if unavailable
-	queryVec, err := s.aiClient.Embedding(ctx, expandedQuery)
-	if err != nil {
+	vecs, err := s.embedder.EmbedStrings(ctx, []string{expandedQuery})
+	if err != nil || len(vecs) == 0 {
 		return s.chapterRepo.FullTextSearch(novelID, maxChapter, tsQuery, topK)
+	}
+	queryVec := make([]float32, len(vecs[0]))
+	for i, v := range vecs[0] {
+		queryVec[i] = float32(v)
 	}
 
 	vec := pgvector.NewVector(queryVec)

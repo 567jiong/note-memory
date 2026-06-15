@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
-	"note-memory/internal/ai"
 	"note-memory/internal/model"
 	"note-memory/internal/parser"
 	"note-memory/internal/repository"
 
+	einomodel "github.com/cloudwego/eino/components/model"
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/transform"
 	"gorm.io/gorm"
@@ -21,7 +21,7 @@ type NovelService struct {
 	chapterRepo  *repository.ChapterRepo
 	progressRepo *repository.ProgressRepo
 	chapterSvc   *ChapterService
-	aiClient     *ai.Client
+	chatModel    einomodel.ToolCallingChatModel
 }
 
 func NewNovelService(
@@ -30,14 +30,14 @@ func NewNovelService(
 	chapterRepo *repository.ChapterRepo,
 	progressRepo *repository.ProgressRepo,
 	chapterSvc *ChapterService,
-	aiClient *ai.Client,
+	chatModel einomodel.ToolCallingChatModel,
 ) *NovelService {
 	return &NovelService{
 		novelRepo:    novelRepo,
 		chapterRepo:  chapterRepo,
 		progressRepo: progressRepo,
 		chapterSvc:   chapterSvc,
-		aiClient:     aiClient,
+		chatModel:    chatModel,
 	}
 }
 
@@ -58,7 +58,7 @@ func (s *NovelService) Upload(ctx context.Context, file multipart.File, filename
 	content := detectAndDecode(contentBytes)
 
 	// LLM-first meta extraction with regex fallback
-	title, author := llmExtractMeta(ctx, s.aiClient, content)
+	title, author := llmExtractMeta(ctx, s.chatModel, content)
 	if title == "" && filename != "" {
 		name := filename
 		for i := len(name) - 1; i >= 0; i-- {

@@ -5,30 +5,34 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"note-memory/internal/ai"
 	"note-memory/internal/graph"
 	"note-memory/internal/model"
 	"note-memory/internal/repository"
 	"strings"
 	"sync"
 
+	einomodel "github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/components/embedding"
+	"github.com/cloudwego/eino/schema"
 	"github.com/pgvector/pgvector-go"
 )
 
 // ChapterService handles AI-powered chapter analysis.
 type ChapterService struct {
 	chapterRepo *repository.ChapterRepo
-	aiClient    *ai.Client
+	chatModel   einomodel.ToolCallingChatModel
+	embedder    embedding.Embedder
 	ragSvc      *RAGService
 	searchSvc   *SearchService
 	graphWriter *graph.GraphWriter
 	concurrency int
 }
 
-func NewChapterService(chapterRepo *repository.ChapterRepo, aiClient *ai.Client, ragSvc *RAGService, searchSvc *SearchService, graphWriter *graph.GraphWriter) *ChapterService {
+func NewChapterService(chapterRepo *repository.ChapterRepo, chatModel einomodel.ToolCallingChatModel, embedder embedding.Embedder, ragSvc *RAGService, searchSvc *SearchService, graphWriter *graph.GraphWriter) *ChapterService {
 	return &ChapterService{
 		chapterRepo: chapterRepo,
-		aiClient:    aiClient,
+		chatModel:   chatModel,
+		embedder:    embedder,
 		ragSvc:      ragSvc,
 		searchSvc:   searchSvc,
 		graphWriter:  graphWriter,
@@ -88,13 +92,16 @@ func (s *ChapterService) summarizeChapter(ctx context.Context, ch *model.Chapter
 
 	userPrompt := fmt.Sprintf("章节标题：%s\n\n章节内容：\n%s", ch.Title, ch.Content)
 
-	resp, err := s.aiClient.ChatSimple(ctx, sysPrompt, userPrompt)
+	msg, err := s.chatModel.Generate(ctx, []*schema.Message{
+		schema.SystemMessage(sysPrompt),
+		schema.UserMessage(userPrompt),
+	}, einomodel.WithTemperature(0.7), einomodel.WithMaxTokens(2000))
 	if err != nil {
 		log.Printf("[chapter] AI summarize error for novel %d chapter %d: %v", ch.NovelID, ch.ChapterNumber, err)
 		return
 	}
 
-	summary, charsJSON, eventsJSON := parseAIResponse(resp)
+	summary, charsJSON, eventsJSON := parseAIResponse(msg.Content)
 
 	chars, _ := model.MarshalCharacters(charsJSON)
 	events, _ := model.MarshalEvents(eventsJSON)
@@ -156,10 +163,14 @@ func (s *ChapterService) chunkAndEmbedChapter(ctx context.Context, ch *model.Cha
 	}
 
 	for i := range records {
-		vec, err := s.aiClient.Embedding(ctx, records[i].Content)
-		if err != nil {
+		vecs, err := s.embedder.EmbedStrings(ctx, []string{records[i].Content})
+		if err != nil || len(vecs) == 0 {
 			log.Printf("[chunk] embedding error for chapter %d chunk %d: %v", ch.ChapterNumber, i+1, err)
 			continue
+		}
+		vec := make([]float32, len(vecs[0]))
+		for j, v := range vecs[0] {
+			vec[j] = float32(v)
 		}
 		if err := s.chapterRepo.BatchUpdateChunkEmbedding(
 			[]int64{records[i].ID}, []pgvector.Vector{pgvector.NewVector(vec)},
@@ -192,10 +203,14 @@ func (s *ChapterService) FillChunkEmbeddings(ctx context.Context, novelID int64)
 			go func(c model.ChapterChunk) {
 				defer wg.Done()
 				defer func() { <-sem }()
-				vec, err := s.aiClient.Embedding(ctx, c.Content)
-				if err != nil {
+				vecs, err := s.embedder.EmbedStrings(ctx, []string{c.Content})
+				if err != nil || len(vecs) == 0 {
 					log.Printf("[chunk] embedding error for chunk %d: %v", c.ID, err)
 					return
+				}
+				vec := make([]float32, len(vecs[0]))
+				for j, v := range vecs[0] {
+					vec[j] = float32(v)
 				}
 				if err := s.chapterRepo.BatchUpdateChunkEmbedding(
 					[]int64{c.ID}, []pgvector.Vector{pgvector.NewVector(vec)},
