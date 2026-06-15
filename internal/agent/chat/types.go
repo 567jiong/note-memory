@@ -1,6 +1,6 @@
-package agent
+package chat
 
-// --- Tool input/output types for Eino ADK tools ---
+// --- Tool input types for Eino ADK tools ---
 
 // SearchChaptersInput is the input for the search_chapters tool.
 type SearchChaptersInput struct {
@@ -35,11 +35,11 @@ type QueryRelationsInput struct {
 
 // RelationEntry is a single character relationship.
 type RelationEntry struct {
-	From     string `json:"from"`
-	To       string `json:"to"`
-	RelType  string `json:"rel_type"`
-	Since    int    `json:"since_chapter"`
-	Ended    int    `json:"ended_chapter,omitempty"`
+	From  string `json:"from"`
+	To    string `json:"to"`
+	RelType string `json:"rel_type"`
+	Since int    `json:"since_chapter"`
+	Ended int    `json:"ended_chapter,omitempty"`
 }
 
 // ResolveEntityInput is the input for the resolve_entity tool.

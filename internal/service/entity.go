@@ -4,15 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"note-memory/internal/agent"
+	"note-memory/internal/agent/descriptor"
 	"note-memory/internal/model"
 	"note-memory/internal/repository"
-	"strings"
 	"time"
 
 	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/components/embedding"
-	"github.com/cloudwego/eino/schema"
 	"github.com/pgvector/pgvector-go"
 )
 
@@ -65,24 +63,13 @@ func (s *EntityService) UpsertEntityFromChapter(ctx context.Context, novelID int
 	}
 
 	// Build description via LLM
-	userPrompt := fmt.Sprintf(`人物名称：%s
-别名列表：%s
-当前状态：%s
-首次出场章节：%d`,
-		char.Name, strings.Join(allAliases, "、"), char.Status, char.FirstAppearance)
-
-	msg, err := s.chatModel.Generate(ctx, []*schema.Message{
-		schema.SystemMessage(agent.EntityDescriptionPrompt()),
-		schema.UserMessage(userPrompt),
-	}, einomodel.WithTemperature(0.5), einomodel.WithMaxTokens(400))
+	dsc, err := descriptor.New(ctx, descriptor.Config{ChatModel: s.chatModel})
+	if err != nil {
+		return fmt.Errorf("create descriptor agent for %s: %w", char.Name, err)
+	}
+	description, err := descriptor.Run(ctx, dsc, char.Name, allAliases, char.Status, char.FirstAppearance)
 	if err != nil {
 		return fmt.Errorf("generate description for %s: %w", char.Name, err)
-	}
-
-	description := strings.TrimSpace(msg.Content)
-	if description == "" {
-		// Fallback: use name + aliases as minimal description
-		description = fmt.Sprintf("%s，别名%s", char.Name, strings.Join(allAliases, "、"))
 	}
 
 	return s.storeEntityEmbedding(ctx, novelID, char.Name, "character", description)

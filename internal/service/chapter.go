@@ -3,9 +3,8 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log"
-	"note-memory/internal/agent"
+	"note-memory/internal/agent/summarizer"
 	"note-memory/internal/graph"
 	"note-memory/internal/model"
 	"note-memory/internal/repository"
@@ -14,7 +13,6 @@ import (
 
 	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/components/embedding"
-	"github.com/cloudwego/eino/schema"
 	"github.com/pgvector/pgvector-go"
 )
 
@@ -80,20 +78,19 @@ func (s *ChapterService) ParseAllChapters(ctx context.Context, novelID int64) {
 // summarizeChapter sends a chapter to AI for summarization, then chunks the content
 // and generates chunk-level embeddings for semantic search.
 func (s *ChapterService) summarizeChapter(ctx context.Context, ch *model.Chapter) {
-	sysPrompt := agent.ChapterSummaryPrompt()
+	sr, err := summarizer.New(ctx, summarizer.Config{ChatModel: s.chatModel})
+	if err != nil {
+		log.Printf("[chapter] create summarizer agent error for novel %d chapter %d: %v", ch.NovelID, ch.ChapterNumber, err)
+		return
+	}
 
-	userPrompt := fmt.Sprintf("章节标题：%s\n\n章节内容：\n%s", ch.Title, ch.Content)
-
-	msg, err := s.chatModel.Generate(ctx, []*schema.Message{
-		schema.SystemMessage(sysPrompt),
-		schema.UserMessage(userPrompt),
-	}, einomodel.WithTemperature(0.7), einomodel.WithMaxTokens(2000))
+	resp, err := summarizer.Run(ctx, sr, ch.Title, ch.Content)
 	if err != nil {
 		log.Printf("[chapter] AI summarize error for novel %d chapter %d: %v", ch.NovelID, ch.ChapterNumber, err)
 		return
 	}
 
-	summary, charsJSON, eventsJSON := parseAIResponse(msg.Content)
+	summary, charsJSON, eventsJSON := parseAIResponse(resp)
 
 	chars, _ := model.MarshalCharacters(charsJSON)
 	events, _ := model.MarshalEvents(eventsJSON)

@@ -1,4 +1,4 @@
-package agent
+package chat
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 )
 
 // ToolDeps provides request-scoped dependencies via function closures.
-// Using functions instead of concrete types avoids import cycles between agent ↔ service.
+// Using functions instead of concrete types avoids import cycles.
 type ToolDeps struct {
 	NovelID    int64
 	MaxChapter int
