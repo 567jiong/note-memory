@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"note-memory/internal/agent/chat"
 	"note-memory/internal/graph"
 	"note-memory/internal/model"
 	"note-memory/internal/repository"
@@ -61,9 +60,9 @@ func (s *Service) AskQuestion(ctx context.Context, novelID int64, question strin
 	maxChapter := progress.CurrentChapter
 	novelTitle := novel.Title
 
-	readingAgent, err := chat.New(ctx, chat.Config{
+	readingAgent, err := newReadingAgent(ctx, agentConfig{
 		ChatModel: s.chatModel,
-		Tools: chat.ToolDeps{
+		Tools: toolDeps{
 			NovelID:    novelID,
 			MaxChapter: maxChapter,
 
@@ -96,9 +95,9 @@ func (s *Service) AskQuestion(ctx context.Context, novelID int64, question strin
 				if err != nil {
 					return "", err
 				}
-				var out []chat.TimelineEntry
+				var out []timelineEntry
 				for _, e := range entries {
-					out = append(out, chat.TimelineEntry{Realm: e.Realm, Chapter: e.Chapter, Age: e.Age})
+					out = append(out, timelineEntry{Realm: e.Realm, Chapter: e.Chapter, Age: e.Age})
 				}
 				b, _ := json.Marshal(out)
 				return string(b), nil
@@ -112,9 +111,9 @@ func (s *Service) AskQuestion(ctx context.Context, novelID int64, question strin
 				if err != nil {
 					return "", err
 				}
-				var out []chat.RelationEntry
+				var out []relationEntry
 				for _, e := range entries {
-					out = append(out, chat.RelationEntry{From: e.FromName, To: e.ToName, RelType: e.RelationType, Since: e.SinceChapter, Ended: e.EndedChapter})
+					out = append(out, relationEntry{From: e.FromName, To: e.ToName, RelType: e.RelationType, Since: e.SinceChapter, Ended: e.EndedChapter})
 				}
 				b, _ := json.Marshal(out)
 				return string(b), nil
@@ -139,7 +138,7 @@ func (s *Service) AskQuestion(ctx context.Context, novelID int64, question strin
 	if err != nil {
 		return "", fmt.Errorf("create agent: %w", err)
 	}
-	return chat.Run(ctx, readingAgent, novelTitle, maxChapter, question)
+	return runReadingAgent(ctx, readingAgent, novelTitle, maxChapter, question)
 }
 
 // SearchChapters performs semantic search and returns formatted results.

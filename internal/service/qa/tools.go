@@ -1,4 +1,4 @@
-package chat
+package qa
 
 import (
 	"context"
@@ -8,27 +8,19 @@ import (
 	"github.com/cloudwego/eino/components/tool/utils"
 )
 
-// ToolDeps provides request-scoped dependencies via function closures.
-// Using functions instead of concrete types avoids import cycles.
-type ToolDeps struct {
+// toolDeps provides request-scoped dependencies via function closures.
+type toolDeps struct {
 	NovelID    int64
 	MaxChapter int
 
-	// SearchFunc performs hybrid search on chapters.
-	SearchFunc func(ctx context.Context, query string, novelID int64, maxChapter int, topK int) (string, error)
-
-	// TimelineFunc queries realm breakthrough timeline.
-	TimelineFunc func(ctx context.Context, novelID int64, charName string, maxChapter int) (string, error)
-
-	// RelationsFunc queries character relationships.
+	SearchFunc    func(ctx context.Context, query string, novelID int64, maxChapter int, topK int) (string, error)
+	TimelineFunc  func(ctx context.Context, novelID int64, charName string, maxChapter int) (string, error)
 	RelationsFunc func(ctx context.Context, novelID int64, charName string, maxChapter int) (string, error)
-
-	// EntityFunc resolves entity aliases/descriptions to canonical names.
-	EntityFunc func(ctx context.Context, query string, novelID int64, topK int) (string, error)
+	EntityFunc    func(ctx context.Context, query string, novelID int64, topK int) (string, error)
 }
 
-// BuildTools creates the tool set for the Reading Memory Agent.
-func BuildTools(deps ToolDeps) ([]tool.BaseTool, error) {
+// buildTools creates the tool set for the Reading Memory Agent.
+func buildTools(deps toolDeps) ([]tool.BaseTool, error) {
 	searchTool, err := newSearchChaptersTool(deps)
 	if err != nil {
 		return nil, fmt.Errorf("create search_chapters tool: %w", err)
@@ -54,12 +46,12 @@ func BuildTools(deps ToolDeps) ([]tool.BaseTool, error) {
 
 // --- search_chapters ---
 
-func newSearchChaptersTool(deps ToolDeps) (tool.InvokableTool, error) {
+func newSearchChaptersTool(deps toolDeps) (tool.InvokableTool, error) {
 	return utils.InferTool(
 		"search_chapters",
 		"搜索小说章节内容。传入中文关键词，返回相关章节的摘要和匹配文本片段。"+
 			"适合查找：剧情细节、事件经过、物品描述、对话内容。不适合：人物关系、境界查询。",
-		func(ctx context.Context, input *SearchChaptersInput) (string, error) {
+		func(ctx context.Context, input *searchChaptersInput) (string, error) {
 			if deps.SearchFunc == nil {
 				return `[]`, nil
 			}
@@ -70,12 +62,12 @@ func newSearchChaptersTool(deps ToolDeps) (tool.InvokableTool, error) {
 
 // --- resolve_entity ---
 
-func newResolveEntityTool(deps ToolDeps) (tool.InvokableTool, error) {
+func newResolveEntityTool(deps toolDeps) (tool.InvokableTool, error) {
 	return utils.InferTool(
 		"resolve_entity",
 		"通过别名、称号或特征描述查找人物的规范名称。"+
 			"当用户使用的称呼不是规范名时（如'韩跑跑''那个拿掌天瓶的'），必须先调用此工具获取规范名，再用规范名查询关系或时间线。",
-		func(ctx context.Context, input *ResolveEntityInput) (string, error) {
+		func(ctx context.Context, input *resolveEntityInput) (string, error) {
 			if deps.EntityFunc == nil {
 				return `{"matched_names":[]}`, nil
 			}
@@ -86,12 +78,12 @@ func newResolveEntityTool(deps ToolDeps) (tool.InvokableTool, error) {
 
 // --- query_timeline ---
 
-func newQueryTimelineTool(deps ToolDeps) (tool.InvokableTool, error) {
+func newQueryTimelineTool(deps toolDeps) (tool.InvokableTool, error) {
 	return utils.InferTool(
 		"query_timeline",
 		"查询人物的修炼境界突破时间线。返回每次突破的章节号和年龄。"+
 			"适合回答：'XXX现在什么境界''XXX什么时候突破的筑基期''XXX的修炼历程'。需要提供规范角色名。",
-		func(ctx context.Context, input *QueryTimelineInput) (string, error) {
+		func(ctx context.Context, input *queryTimelineInput) (string, error) {
 			if deps.TimelineFunc == nil {
 				return `[]`, nil
 			}
@@ -102,12 +94,12 @@ func newQueryTimelineTool(deps ToolDeps) (tool.InvokableTool, error) {
 
 // --- query_relations ---
 
-func newQueryRelationsTool(deps ToolDeps) (tool.InvokableTool, error) {
+func newQueryRelationsTool(deps toolDeps) (tool.InvokableTool, error) {
 	return utils.InferTool(
 		"query_relations",
 		"查询人物的人际关系网。返回师徒、仇敌、道侣、朋友、宗门归属等关系。"+
 			"适合回答：'XXX和YYY什么关系''XXX有哪些仇敌''XXX的师父是谁'。需要提供规范角色名。",
-		func(ctx context.Context, input *QueryRelationsInput) (string, error) {
+		func(ctx context.Context, input *queryRelationsInput) (string, error) {
 			if deps.RelationsFunc == nil {
 				return `[]`, nil
 			}

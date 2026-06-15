@@ -1,4 +1,4 @@
-package chat
+package qa
 
 import (
 	"context"
@@ -10,9 +10,8 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
-// instruction is the system prompt for the Reading Memory ChatModelAgent.
-// Private — this defines the agent's identity at creation time.
-const instruction = `你是一个小说阅读记忆助手（Reading Memory Agent），帮助用户回忆长篇小说中的人物、剧情和关系。
+// agentInstruction is the system prompt for the Reading Memory ChatModelAgent.
+const agentInstruction = `你是一个小说阅读记忆助手（Reading Memory Agent），帮助用户回忆长篇小说中的人物、剧情和关系。
 
 ## 你的能力
 你可以使用以下工具获取信息：
@@ -33,16 +32,15 @@ const instruction = `你是一个小说阅读记忆助手（Reading Memory Agent
 - 回答简洁、准确，不要编造信息
 - 使用人物的规范名称（而非别名）来回答`
 
-// Config holds dependencies for creating a Reading Memory agent.
-type Config struct {
+// agentConfig holds dependencies for creating a Reading Memory agent.
+type agentConfig struct {
 	ChatModel einomodel.ToolCallingChatModel
-	Tools     ToolDeps
+	Tools     toolDeps
 }
 
-// New creates a ChatModelAgent for the reading memory use case.
-// The agent's instruction is baked in — callers only inject dependencies.
-func New(ctx context.Context, cfg Config) (adk.Agent, error) {
-	tools, err := BuildTools(cfg.Tools)
+// newReadingAgent creates a ChatModelAgent for the reading memory use case.
+func newReadingAgent(ctx context.Context, cfg agentConfig) (adk.Agent, error) {
+	tools, err := buildTools(cfg.Tools)
 	if err != nil {
 		return nil, fmt.Errorf("build tools: %w", err)
 	}
@@ -50,7 +48,7 @@ func New(ctx context.Context, cfg Config) (adk.Agent, error) {
 	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:        "ReadingMemoryAgent",
 		Description: "小说阅读记忆助手，帮助用户回忆剧情、人物关系、境界历程",
-		Instruction: instruction,
+		Instruction: agentInstruction,
 		Model:       cfg.ChatModel,
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{
@@ -66,8 +64,8 @@ func New(ctx context.Context, cfg Config) (adk.Agent, error) {
 	return agent, nil
 }
 
-// Run runs the agent with a user question and returns the final answer.
-func Run(ctx context.Context, agent adk.Agent, novelTitle string, maxChapter int, question string) (string, error) {
+// runReadingAgent runs the agent with a user question and returns the final answer.
+func runReadingAgent(ctx context.Context, agent adk.Agent, novelTitle string, maxChapter int, question string) (string, error) {
 	runner := adk.NewRunner(ctx, adk.RunnerConfig{Agent: agent})
 
 	input := []*schema.Message{

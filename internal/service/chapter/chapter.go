@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"log"
-	"note-memory/internal/agent/summarizer"
 	"note-memory/internal/graph"
 	"note-memory/internal/model"
 	"note-memory/internal/repository"
@@ -78,13 +77,13 @@ func (s *Service) ParseAllChapters(ctx context.Context, novelID int64) {
 // summarizeChapter sends a chapter to AI for summarization, then chunks the content
 // and generates chunk-level embeddings for semantic search.
 func (s *Service) summarizeChapter(ctx context.Context, ch *model.Chapter) {
-	sr, err := summarizer.New(ctx, summarizer.Config{ChatModel: s.chatModel})
+	sr, err := newSummarizerAgent(ctx, s.chatModel)
 	if err != nil {
 		log.Printf("[chapter] create summarizer agent error for novel %d chapter %d: %v", ch.NovelID, ch.ChapterNumber, err)
 		return
 	}
 
-	resp, err := summarizer.Run(ctx, sr, ch.Title, ch.Content)
+	resp, err := runSummarizer(ctx, sr, ch.Title, ch.Content)
 	if err != nil {
 		log.Printf("[chapter] AI summarize error for novel %d chapter %d: %v", ch.NovelID, ch.ChapterNumber, err)
 		return

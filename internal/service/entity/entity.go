@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"note-memory/internal/agent/descriptor"
 	"note-memory/internal/model"
 	"note-memory/internal/repository"
 	"time"
@@ -62,11 +61,11 @@ func (s *Service) UpsertEntityFromChapter(ctx context.Context, novelID int64, ch
 	}
 
 	// Build description via LLM
-	dsc, err := descriptor.New(ctx, descriptor.Config{ChatModel: s.chatModel})
+	dsc, err := newDescriptorAgent(ctx, s.chatModel)
 	if err != nil {
 		return fmt.Errorf("create descriptor agent for %s: %w", char.Name, err)
 	}
-	description, err := descriptor.Run(ctx, dsc, char.Name, allAliases, char.Status, char.FirstAppearance)
+	description, err := runDescriptor(ctx, dsc, char.Name, allAliases, char.Status, char.FirstAppearance)
 	if err != nil {
 		return fmt.Errorf("generate description for %s: %w", char.Name, err)
 	}
