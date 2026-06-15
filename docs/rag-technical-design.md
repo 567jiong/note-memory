@@ -336,11 +336,17 @@ CREATE TABLE chapter_chunks (
 
 | 文件 | 职责 |
 |------|------|
-| `internal/ai/embedding.go` | Embedding API 调用 |
-| `internal/service/chunker.go` | 内容分块引擎（句子切分、贪婪合并、重叠策略） |
-| `internal/service/search.go` | 混合检索、别名扩展、Bigram 分词 |
-| `internal/service/rag.go` | 语义搜索（Chunk 优先 + 章级降级）、Agentic RAG、上下文拼装 |
-| `internal/service/qa.go` | 问答服务（集成 Agentic RAG） |
+| `internal/service/tools/types.go` | 共享 Tool 输入/输出类型（所有 agent 共用） |
+| `internal/service/tools/tools.go` | Deps + Build() 返回 4 个 tool.BaseTool |
+| `internal/service/chapter/chunker.go` | 内容分块引擎（句子切分、贪婪合并、重叠策略） |
+| `internal/service/chapter/summarizer.go` | 章节摘要 agent（ADK ChatModelAgent） |
+| `internal/service/search/search.go` | SearchService：混合检索、别名扩展、Bigram 分词、SearchTool() |
+| `internal/service/search/rag.go` | RAGService：语义搜索（Chunk 优先）、AgenticRetrieve |
+| `internal/service/search/agentic_rag.go` | Agentic RAG agent（ADK ChatModelAgent + 共享 tools） |
+| `internal/service/entity/entity.go` | EntityService：实体向量化、语义匹配、EntityTool() |
+| `internal/service/entity/descriptor.go` | 实体描述 agent（ADK ChatModelAgent） |
+| `internal/service/qa/qa.go` | QAService：问答服务 |
+| `internal/service/qa/agent.go` | Reading Memory agent（ADK ChatModelAgent + 4 tools） |
 | `internal/repository/chapter.go` | SQL 层：HybridSearch / SearchChunks / SearchSimilar / 别名 CRUD |
 | `internal/model/models.go` | ChapterChunk / HybridSearchResult / EntityAlias / AliasInfo |
 | `migrations/002_pgvector.sql` | pgvector 列 + 扩展 |
