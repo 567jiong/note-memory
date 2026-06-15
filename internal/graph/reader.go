@@ -3,7 +3,6 @@ package graph
 import (
 	"context"
 	"fmt"
-	"strings"
 )
 
 // GraphReader executes knowledge graph queries with spoiler-free filtering.
@@ -130,107 +129,6 @@ func (r *GraphReader) CharacterRelations(ctx context.Context, novelID int64, cha
 		})
 	}
 	return entries, result.Err()
-}
-
-// CharacterStatusTimeline returns a character's status across chapters.
-type StatusEntry struct {
-	Chapter int
-	Status  string
-	Age     int
-}
-
-func (r *GraphReader) CharacterStatusTimeline(ctx context.Context, novelID int64, charName string, maxChapter int) ([]StatusEntry, error) {
-	if !r.IsEnabled() {
-		return nil, nil
-	}
-
-	s := r.driver.Session(ctx)
-	if s == nil {
-		return nil, nil
-	}
-	defer s.Close(ctx)
-
-	result, err := s.Run(ctx, `
-		MATCH (c:Character {novel_id: $novelId, name: $name})
-		      -[a:APPEARS_IN]->(ch:Chapter)
-		WHERE ch.chapter_number <= $maxChapter
-		RETURN ch.chapter_number AS chapter, a.status AS status, a.age AS age
-		ORDER BY ch.chapter_number
-	`, map[string]any{
-		"novelId":    novelID,
-		"name":       charName,
-		"maxChapter": maxChapter,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("status timeline: %w", err)
-	}
-
-	var entries []StatusEntry
-	for result.Next(ctx) {
-		record := result.Record()
-		chapter, _ := record.Get("chapter")
-		status, _ := record.Get("status")
-		age, _ := record.Get("age")
-
-		entries = append(entries, StatusEntry{
-			Chapter: toInt(chapter),
-			Status:  toString(status),
-			Age:     toInt(age),
-		})
-	}
-	return entries, result.Err()
-}
-
-// FormatTimeline formats a realm timeline for LLM context injection.
-func FormatRealmTimeline(entries []RealmEntry, charName string, maxChapter int) string {
-	if len(entries) == 0 {
-		return ""
-	}
-
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("\n=== %s 境界突破时间线（第1~%d章） ===\n", charName, maxChapter))
-	for _, e := range entries {
-		ageStr := ""
-		if e.Age > 0 {
-			ageStr = fmt.Sprintf("（%d岁）", e.Age)
-		}
-		sb.WriteString(fmt.Sprintf("- 第%d章: 突破至%s%s\n", e.Chapter, e.Realm, ageStr))
-	}
-	return sb.String()
-}
-
-// FormatRelations formats character relations for LLM context injection.
-func FormatRelations(entries []RelationEntry, charName string, maxChapter int) string {
-	if len(entries) == 0 {
-		return ""
-	}
-
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("\n=== %s 人际关系（截至第%d章） ===\n", charName, maxChapter))
-
-	relLabel := map[string]string{
-		"MASTER_OF":     "师父→",
-		"FRIEND_OF":     "朋友↔",
-		"ENEMY_OF":      "仇敌↔",
-		"LOVE_INTEREST": "道侣♥",
-		"BELONGS_TO":    "宗门∈",
-	}
-
-	for _, e := range entries {
-		label := relLabel[e.RelationType]
-		if label == "" {
-			label = e.RelationType
-		}
-
-		endedStr := ""
-		if e.EndedChapter > 0 && e.EndedChapter <= maxChapter {
-			endedStr = fmt.Sprintf("（第%d章结束）", e.EndedChapter)
-		}
-
-		sb.WriteString(fmt.Sprintf("- %s %s %s（始于第%d章）%s\n",
-			e.FromName, label, e.ToName, e.SinceChapter, endedStr))
-	}
-	return sb.String()
 }
 
 // ---- Type helpers ----

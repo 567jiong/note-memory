@@ -1,7 +1,5 @@
 package agent
 
-import "fmt"
-
 // AgentInstruction returns the system instruction for the Reading Memory ChatModelAgent.
 func AgentInstruction() string {
 	return `你是一个小说阅读记忆助手（Reading Memory Agent），帮助用户回忆长篇小说中的人物、剧情和关系。
@@ -61,7 +59,3 @@ func EntityDescriptionPrompt() string {
 直接输出描述文本，不要JSON，不要XML标签，不要任何前缀。`
 }
 
-// UserMessageForAgent formats the user's question with novel context.
-func UserMessageForAgent(novelTitle string, maxChapter int, question string) string {
-	return fmt.Sprintf("小说《%s》，用户读到第 %d 章。\n\n用户提问：%s", novelTitle, maxChapter, question)
-}

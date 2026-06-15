@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"note-memory/internal/agent"
 	"note-memory/internal/graph"
 	"note-memory/internal/model"
 	"note-memory/internal/repository"
@@ -79,23 +80,7 @@ func (s *ChapterService) ParseAllChapters(ctx context.Context, novelID int64) {
 // summarizeChapter sends a chapter to AI for summarization, then chunks the content
 // and generates chunk-level embeddings for semantic search.
 func (s *ChapterService) summarizeChapter(ctx context.Context, ch *model.Chapter) {
-	sysPrompt := `你是一个小说分析助手。请根据提供的章节内容完成以下任务：
-
-1. 用 2-3 句话总结本章主要情节。
-2. 提取本章出现的主要人物。只提取有明确姓名或固定称呼的角色，不要提取"黄脸修士""中年儒生""师兄"之类的外貌描述或泛称角色。以 JSON 数组格式返回。每个人物包含以下字段：
-   - name: 人物名
-   - aliases: 别名数组
-   - status: 本章中的状态或变化
-   - realm: 当前修炼境界名称（如"筑基期""元婴期"，根据文中描述推断，没有则为空字符串）
-   - first_appearance: 章节号
-   格式：[{"name":"人物名","aliases":["别名"],"status":"状态","realm":"境界名","first_appearance":章节号}]
-3. 提取本章的关键事件，以 JSON 数组格式返回：
-   [{"title":"事件名","participants":["人物名"],"summary":"事件简述","impact":"影响","chapter_num":章节号}]
-
-请严格按照以下 XML 格式输出：
-<summary>总结内容</summary>
-<characters>人物JSON数组</characters>
-<events>事件JSON数组</events>`
+	sysPrompt := agent.ChapterSummaryPrompt()
 
 	userPrompt := fmt.Sprintf("章节标题：%s\n\n章节内容：\n%s", ch.Title, ch.Content)
 

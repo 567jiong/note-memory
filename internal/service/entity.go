@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"note-memory/internal/agent"
 	"note-memory/internal/model"
 	"note-memory/internal/repository"
 	"strings"
@@ -32,17 +33,6 @@ func NewEntityService(chapterRepo *repository.ChapterRepo, chatModel einomodel.T
 	}
 }
 
-// buildEntityDescriptionPrompt is the system prompt for generating rich entity descriptions.
-const buildEntityDescriptionPrompt = `你是一个小说实体描述生成器。根据提供的人物信息，生成一段富描述文本（100-300字）。
-
-## 要求
-- 自然流畅，适合用于语义搜索
-- 包含：正式姓名、所有已知别名/马甲/称号、修炼境界历程、所属宗门/势力、
-       持有的重要法宝/功法、关键人际关系、性格特征
-- 不要编造信息，只使用提供的数据
-
-## 输出格式
-直接输出描述文本，不要JSON，不要XML标签，不要任何前缀。`
 
 // UpsertEntityFromChapter generates or updates an entity embedding for a character
 // based on the latest chapter's extracted info. Called per-chapter after AI summarization.
@@ -82,7 +72,7 @@ func (s *EntityService) UpsertEntityFromChapter(ctx context.Context, novelID int
 		char.Name, strings.Join(allAliases, "、"), char.Status, char.FirstAppearance)
 
 	msg, err := s.chatModel.Generate(ctx, []*schema.Message{
-		schema.SystemMessage(buildEntityDescriptionPrompt),
+		schema.SystemMessage(agent.EntityDescriptionPrompt()),
 		schema.UserMessage(userPrompt),
 	}, einomodel.WithTemperature(0.5), einomodel.WithMaxTokens(400))
 	if err != nil {
