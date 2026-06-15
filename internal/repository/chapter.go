@@ -132,44 +132,6 @@ func (r *ChapterRepo) UpdateSearchText(chapterID int64, searchText string) error
 	`, searchText, searchText, chapterID).Error
 }
 
-// ListAliases returns all canonical-name→aliases mappings for a novel.
-func (r *ChapterRepo) ListAliases(novelID int64) ([]model.AliasInfo, error) {
-	var items []model.EntityAlias
-	err := r.db.Where("novel_id = ?", novelID).Find(&items).Error
-	if err != nil {
-		return nil, err
-	}
-
-	// Group by canonical name
-	grouped := make(map[string]*model.AliasInfo)
-	for _, item := range items {
-		if _, ok := grouped[item.CanonicalName]; !ok {
-			grouped[item.CanonicalName] = &model.AliasInfo{Name: item.CanonicalName}
-		}
-		info := grouped[item.CanonicalName]
-		if item.Alias != item.CanonicalName {
-			info.Aliases = append(info.Aliases, item.Alias)
-		}
-	}
-
-	var result []model.AliasInfo
-	for _, v := range grouped {
-		result = append(result, *v)
-	}
-	return result, nil
-}
-
-// UpsertAliases inserts or updates entity aliases in bulk.
-func (r *ChapterRepo) UpsertAliases(entries []model.EntityAlias) error {
-	if len(entries) == 0 {
-		return nil
-	}
-	return r.db.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "novel_id"}, {Name: "alias"}},
-		DoNothing: true,
-	}).CreateInBatches(entries, 200).Error
-}
-
 // ---- Chapter Chunks ----
 
 // BatchCreateChunks inserts chunk records in batches.

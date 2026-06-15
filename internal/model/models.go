@@ -70,16 +70,6 @@ type QACache struct {
 
 func (QACache) TableName() string { return "qa_cache" }
 
-// EntityAlias maps nicknames/aliases to canonical character names for search expansion.
-type EntityAlias struct {
-	ID            int64  `json:"id" gorm:"primaryKey;autoIncrement"`
-	NovelID       int64  `json:"novel_id" gorm:"uniqueIndex:idx_entity_alias_novel"`
-	CanonicalName string `json:"canonical_name" gorm:"type:varchar(200)"`
-	Alias         string `json:"alias" gorm:"type:varchar(200);uniqueIndex:idx_entity_alias_novel"`
-}
-
-func (EntityAlias) TableName() string { return "entity_aliases" }
-
 // ChapterChunk represents a content chunk within a chapter for fine-grained embedding search.
 type ChapterChunk struct {
 	ID         int64           `json:"id" gorm:"primaryKey;autoIncrement"`
@@ -96,8 +86,8 @@ type ChapterChunk struct {
 func (ChapterChunk) TableName() string { return "chapter_chunks" }
 
 // EntityEmbedding stores a rich description + vector for semantic entity matching.
-// Unlike entity_aliases (exact string match), this allows finding "韩立" when searching
-// for "韩跑跑" or "掌天瓶持有者" via cosine similarity.
+// This allows finding "韩立" when searching for "韩跑跑" or "掌天瓶持有者" via cosine similarity,
+// handling aliases, titles, and descriptive phrases that exact string matching would miss.
 type EntityEmbedding struct {
 	ID         int64           `json:"id" gorm:"primaryKey;autoIncrement"`
 	NovelID    int64           `json:"novel_id" gorm:"uniqueIndex:idx_entity_emb_novel_name"`
@@ -110,12 +100,6 @@ type EntityEmbedding struct {
 }
 
 func (EntityEmbedding) TableName() string { return "entity_embeddings" }
-
-// AliasInfo holds canonical name and all its aliases (for search expansion).
-type AliasInfo struct {
-	Name    string   `json:"name"`
-	Aliases []string `json:"aliases"`
-}
 
 // HybridSearchResult holds a ranked search result from hybrid search.
 type HybridSearchResult struct {

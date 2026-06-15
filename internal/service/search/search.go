@@ -9,8 +9,6 @@ import (
 	"log"
 	"note-memory/internal/service/entity"
 	"note-memory/internal/service/tools"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -29,11 +27,6 @@ type Service struct {
 	// jieba segmenter (lazy init, thread-safe after first use)
 	segmenter *gse.Segmenter
 	segOnce   sync.Once
-
-	// per-novel custom dict paths and cached segmenters
-	dictMu    sync.RWMutex
-	novelDict map[int64]string            // novelID → custom dict file path
-	novelSeg  map[int64]*gse.Segmenter    // novelID → cached segmenter with custom dict loaded
 }
 
 func NewService(chapterRepo *repository.ChapterRepo, embedder embedding.Embedder, entitySvc *entity.Service) *Service {
@@ -41,8 +34,6 @@ func NewService(chapterRepo *repository.ChapterRepo, embedder embedding.Embedder
 		chapterRepo: chapterRepo,
 		embedder:    embedder,
 		entitySvc:   entitySvc,
-		novelDict:   make(map[int64]string),
-		novelSeg:    make(map[int64]*gse.Segmenter),
 	}
 }
 
@@ -57,108 +48,16 @@ func (s *Service) getSegmenter() *gse.Segmenter {
 	return s.segmenter
 }
 
-// ---- Custom Dictionary ----
-
-// buildCustomDict creates a custom dictionary file for a novel from extracted entities.
-// Idempotent — only builds once per novel (subsequent calls return cached path).
-// Returns the path to the dict file, or empty string if no entities available.
-func (s *Service) buildCustomDict(novelID int64) string {
-	// Fast path: already built
-	s.dictMu.RLock()
-	if path, ok := s.novelDict[novelID]; ok {
-		s.dictMu.RUnlock()
-		return path
-	}
-	s.dictMu.RUnlock()
-
-	// Slow path: build and cache
-	s.dictMu.Lock()
-	defer s.dictMu.Unlock()
-
-	// Double-check after acquiring write lock
-	if path, ok := s.novelDict[novelID]; ok {
-		return path
-	}
-
-	aliases, err := s.chapterRepo.ListAliases(novelID)
-	if err != nil || len(aliases) == 0 {
-		s.novelDict[novelID] = "" // cache empty result too
-		return ""
-	}
-
-	// Collect unique entity names (canonical + aliases)
-	terms := make(map[string]struct{})
-	for _, a := range aliases {
-		terms[a.Name] = struct{}{}
-		for _, alias := range a.Aliases {
-			terms[alias] = struct{}{}
-		}
-	}
-
-	if len(terms) == 0 {
-		s.novelDict[novelID] = ""
-		return ""
-	}
-
-	// Build dict content: jieba format = "word freq tag"
-	// Give entity terms high frequency (100) so they're always kept as whole words
-	var sb strings.Builder
-	for term := range terms {
-		term = strings.TrimSpace(term)
-		if len([]rune(term)) < 2 {
-			continue
-		}
-		sb.WriteString(fmt.Sprintf("%s 100 n\n", term))
-	}
-
-	// Write to temp file
-	dir := filepath.Join(os.TempDir(), "note-memory-dicts")
-	os.MkdirAll(dir, 0755)
-	path := filepath.Join(dir, fmt.Sprintf("novel_%d.txt", novelID))
-	os.WriteFile(path, []byte(sb.String()), 0644)
-
-	s.novelDict[novelID] = path
-	return path
-}
-
-// getNovelSegmenter returns a cached segmenter for the given novel, creating one if needed.
-// Caching avoids rebuilding the jieba DAG/trie on every tokenization call.
-func (s *Service) getNovelSegmenter(novelID int64, customDictPath string) *gse.Segmenter {
-	if customDictPath == "" {
-		return s.getSegmenter()
-	}
-
-	s.dictMu.RLock()
-	seg, ok := s.novelSeg[novelID]
-	s.dictMu.RUnlock()
-	if ok {
-		return seg
-	}
-
-	s.dictMu.Lock()
-	defer s.dictMu.Unlock()
-
-	// Double-check
-	if seg, ok := s.novelSeg[novelID]; ok {
-		return seg
-	}
-
-	seg = new(gse.Segmenter)
-	seg.LoadDict(customDictPath)
-	s.novelSeg[novelID] = seg
-	return seg
-}
-
 // ---- Tokenization ----
 
-// tokenizeText tokenizes text using jieba + custom dict + bigram fallback.
+// tokenizeText tokenizes text using jieba + bigram fallback.
 // Returns space-separated tokens for tsvector indexing.
 func (s *Service) tokenizeText(text string, novelID int64) string {
 	if text == "" {
 		return ""
 	}
 
-	seg := s.getNovelSegmenter(novelID, s.getNovelDict(novelID))
+	seg := s.getSegmenter()
 
 	// Step 1: Jieba tokenization
 	jiebaTokens := seg.Cut(text, true) // use HMM
@@ -199,7 +98,7 @@ func (s *Service) tokenizeForQuery(query string, novelID int64) string {
 		return ""
 	}
 
-	seg := s.getNovelSegmenter(novelID, s.getNovelDict(novelID))
+	seg := s.getSegmenter()
 
 	tokens := seg.Cut(query, true)
 
@@ -257,8 +156,6 @@ func extractBigrams(text string) []string {
 
 // BuildSearchText generates tokenized search text from a chapter's data.
 func (s *Service) BuildSearchText(novelID int64, chapterTitle, summary string, characters []model.CharacterInfo, events []model.EventInfo) string {
-	s.buildCustomDict(novelID) // ensure dict file is built (idempotent)
-
 	var parts []string
 
 	// Chapter title
@@ -293,115 +190,6 @@ func (s *Service) UpdateSearchIndex(chapterID int64, novelID int64, chapterTitle
 	return s.chapterRepo.UpdateSearchText(chapterID, searchText)
 }
 
-// UpsertChapterAliases incrementally writes aliases from a single chapter's characters.
-// Called per-chapter after AI summarization, avoiding the fragility of batch-at-end.
-func (s *Service) UpsertChapterAliases(novelID int64, characters []model.CharacterInfo) error {
-	if len(characters) == 0 {
-		return nil
-	}
-	var entries []model.EntityAlias
-	for _, c := range characters {
-		if c.Name == "" {
-			continue
-		}
-		entries = append(entries, model.EntityAlias{
-			NovelID:       novelID,
-			CanonicalName: c.Name,
-			Alias:         c.Name,
-		})
-		for _, a := range c.Aliases {
-			if a == "" {
-				continue
-			}
-			entries = append(entries, model.EntityAlias{
-				NovelID:       novelID,
-				CanonicalName: c.Name,
-				Alias:         a,
-			})
-		}
-	}
-	if len(entries) == 0 {
-		return nil
-	}
-	return s.chapterRepo.UpsertAliases(entries)
-}
-
-// RefreshDictForNovel rebuilds the custom jieba dictionary for a novel after incremental updates.
-func (s *Service) RefreshDictForNovel(novelID int64) {
-	s.dictMu.Lock()
-	delete(s.novelDict, novelID)  // force rebuild
-	delete(s.novelSeg, novelID)   // invalidate cached segmenter
-	s.dictMu.Unlock()
-	s.buildCustomDict(novelID)
-}
-
-// RebuildAliasIndex rebuilds entity_aliases for a novel from all chapters.
-// Use this for one-time repair; day-to-day aliases are written incrementally by UpsertChapterAliases.
-func (s *Service) RebuildAliasIndex(novelID int64) error {
-	chapters, err := s.chapterRepo.ListByNovel(novelID)
-	if err != nil {
-		return fmt.Errorf("list chapters: %w", err)
-	}
-
-	type aliasEntry struct {
-		Name    string
-		Aliases []string
-	}
-	aliasMap := make(map[string]aliasEntry)
-
-	for _, ch := range chapters {
-		chars, _ := model.UnmarshalCharacters(ch.Characters)
-		for _, c := range chars {
-			if c.Name == "" {
-				continue
-			}
-			existing := aliasMap[c.Name]
-			existing.Name = c.Name
-			for _, a := range c.Aliases {
-				if a == "" {
-						continue
-					}
-				found := false
-				for _, ea := range existing.Aliases {
-					if ea == a {
-						found = true
-						break
-					}
-				}
-				if !found {
-					existing.Aliases = append(existing.Aliases, a)
-				}
-			}
-			aliasMap[c.Name] = existing
-		}
-	}
-
-	var entries []model.EntityAlias
-	for _, v := range aliasMap {
-		entries = append(entries, model.EntityAlias{
-			NovelID:       novelID,
-			CanonicalName: v.Name,
-			Alias:         v.Name,
-		})
-		for _, a := range v.Aliases {
-			entries = append(entries, model.EntityAlias{
-				NovelID:       novelID,
-				CanonicalName: v.Name,
-				Alias:         a,
-			})
-		}
-	}
-
-	if err := s.chapterRepo.UpsertAliases(entries); err != nil {
-		return err
-	}
-
-	// Rebuild custom dictionary with latest entities
-	s.buildCustomDict(novelID)
-
-	return nil
-}
-
 // ---- Hybrid Search ----
 
 // HybridSearch combines chunk-level semantic search with tsvector full-text search.
@@ -413,7 +201,7 @@ func (s *Service) HybridSearch(ctx context.Context, query string, novelID int64,
 		topK = 10
 	}
 
-	// 1a. Expand query with entity embedding semantic match (new)
+	// 1. Expand query with entity embedding semantic match
 	if s.entitySvc != nil {
 		entities, err := s.entitySvc.SearchEntities(ctx, query, novelID, 3)
 		if err != nil {
@@ -424,14 +212,11 @@ func (s *Service) HybridSearch(ctx context.Context, query string, novelID int64,
 		}
 	}
 
-	// 1b. Expand query with alias resolution (fallback)
-	expandedQuery := s.expandWithAliases(query, novelID)
-
-	// 2. Tokenize query for full-text search (jieba + custom dict)
-	tsQuery := s.tokenizeForQuery(expandedQuery, novelID)
+	// 2. Tokenize query for full-text search (jieba)
+	tsQuery := s.tokenizeForQuery(query, novelID)
 
 	// 3. Try to generate query embedding; fall back to full-text if unavailable
-	vecs, err := s.embedder.EmbedStrings(ctx, []string{expandedQuery})
+	vecs, err := s.embedder.EmbedStrings(ctx, []string{query})
 	if err != nil || len(vecs) == 0 {
 		return s.chapterRepo.FullTextSearch(novelID, maxChapter, tsQuery, topK)
 	}
@@ -498,54 +283,6 @@ func mergeHybridResults(semChapters []model.Chapter, semScores []float64, ftResu
 		return results[i].FinalScore > results[j].FinalScore
 	})
 	return results
-}
-
-// getNovelDict returns the custom dict path for a novel, or empty string.
-func (s *Service) getNovelDict(novelID int64) string {
-	s.dictMu.RLock()
-	defer s.dictMu.RUnlock()
-	return s.novelDict[novelID]
-}
-
-// expandWithAliases expands query with known aliases, but only when unambiguous.
-// If "厉飞雨" is both 韩立's alias AND a real character's name, it will NOT be expanded.
-func (s *Service) expandWithAliases(query string, novelID int64) string {
-	aliases, err := s.chapterRepo.ListAliases(novelID)
-	if err != nil || len(aliases) == 0 {
-		return query
-	}
-
-	// Step 1: Build alias → canonical mapping
-	aliasMap := make(map[string]string)
-	for _, a := range aliases {
-		for _, alias := range a.Aliases {
-			aliasMap[alias] = a.Name
-		}
-		aliasMap[a.Name] = a.Name
-	}
-
-	// Step 2: Build set of ALL canonical names for conflict detection
-	canonicalSet := make(map[string]bool)
-	for _, a := range aliases {
-		canonicalSet[a.Name] = true
-	}
-
-	// Step 3: Expand only unambiguous aliases
-	expanded := query
-	for alias, canonical := range aliasMap {
-		if alias == canonical {
-			continue
-		}
-		// Conflict check: if this alias string IS itself a canonical name of another character,
-		// don't expand — let the hybrid search + LLM disambiguate
-		if canonicalSet[alias] && canonical != alias {
-			continue
-		}
-		if strings.Contains(expanded, alias) && !strings.Contains(expanded, canonical) {
-			expanded = expanded + " " + canonical
-		}
-	}
-	return expanded
 }
 
 // isCJK checks if a rune is CJK.

@@ -55,7 +55,6 @@ func (s *Service) ParseAllChapters(ctx context.Context, novelID int64) {
 		if len(chapters) == 0 {
 			log.Printf("[chapter] novel %d: all summaries done, backfilling chunk embeddings...", novelID)
 			s.FillChunkEmbeddings(ctx, novelID)
-			s.searchSvc.RefreshDictForNovel(novelID)
 			return
 		}
 
@@ -104,11 +103,6 @@ func (s *Service) summarizeChapter(ctx context.Context, ch *model.Chapter) {
 	// Update full-text search index
 	if err := s.searchSvc.UpdateSearchIndex(ch.ID, ch.NovelID, ch.Title, summary, charsJSON, eventsJSON); err != nil {
 		log.Printf("[chapter] search index error for chapter %d: %v", ch.ChapterNumber, err)
-	}
-
-	// Incrementally write aliases (per-chapter, not batch-at-end)
-	if err := s.searchSvc.UpsertChapterAliases(ch.NovelID, charsJSON); err != nil {
-		log.Printf("[chapter] alias upsert error for chapter %d: %v", ch.ChapterNumber, err)
 	}
 
 	// Chunk content into overlapping segments and generate chunk embeddings

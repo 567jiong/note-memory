@@ -38,25 +38,13 @@ func (s *Service) UpsertEntityFromChapter(ctx context.Context, novelID int64, ch
 		return nil
 	}
 
-	// Gather existing info (aliases, prior description) for enrichment
-	existing, _ := s.chapterRepo.ListAliases(novelID)
-	var knownAliases []string
-	for _, a := range existing {
-		if a.Name == char.Name {
-			knownAliases = a.Aliases
-			break
-		}
-	}
-	// Merge with current chapter's aliases
+	// Gather aliases from current chapter's character info
+	var allAliases []string
 	aliasSet := make(map[string]bool)
-	for _, a := range knownAliases {
-		aliasSet[a] = true
-	}
 	aliasSet[char.Name] = true
 	for _, a := range char.Aliases {
 		aliasSet[a] = true
 	}
-	var allAliases []string
 	for a := range aliasSet {
 		allAliases = append(allAliases, a)
 	}
