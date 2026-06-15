@@ -1,33 +1,34 @@
-package service
+package recap
 
 import (
 	"context"
 	"fmt"
 	"note-memory/internal/repository"
+	"note-memory/internal/service/search"
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 )
 
-// RecapService generates reading recovery recaps.
-type RecapService struct {
+// Service generates reading recovery recaps.
+type Service struct {
 	novelRepo    *repository.NovelRepo
 	chapterRepo  *repository.ChapterRepo
 	progressRepo *repository.ProgressRepo
 	recapRepo    *repository.RecapRepo
 	chatModel    model.ToolCallingChatModel
-	ragSvc       *RAGService
+	ragSvc       *search.RAGService
 }
 
-func NewRecapService(
+func NewService(
 	novelRepo *repository.NovelRepo,
 	chapterRepo *repository.ChapterRepo,
 	progressRepo *repository.ProgressRepo,
 	recapRepo *repository.RecapRepo,
 	chatModel model.ToolCallingChatModel,
-	ragSvc *RAGService,
-) *RecapService {
-	return &RecapService{
+	ragSvc *search.RAGService,
+) *Service {
+	return &Service{
 		novelRepo:    novelRepo,
 		chapterRepo:  chapterRepo,
 		progressRepo: progressRepo,
@@ -39,7 +40,7 @@ func NewRecapService(
 
 // GenerateRecap generates or retrieves a cached reading recovery recap.
 // Uses Agentic RAG: multi-step semantic search with LLM verification.
-func (s *RecapService) GenerateRecap(ctx context.Context, novelID int64) (string, error) {
+func (s *Service) GenerateRecap(ctx context.Context, novelID int64) (string, error) {
 	novel, err := s.novelRepo.GetByID(novelID)
 	if err != nil {
 		return "", fmt.Errorf("get novel: %w", err)
@@ -115,7 +116,7 @@ func (s *RecapService) GenerateRecap(ctx context.Context, novelID int64) (string
 }
 
 // GetCachedRecap returns a previously generated recap.
-func (s *RecapService) GetCachedRecap(novelID int64, chapter int) (string, error) {
+func (s *Service) GetCachedRecap(novelID int64, chapter int) (string, error) {
 	recap, err := s.recapRepo.GetByNovelAndChapter(novelID, chapter)
 	if err != nil {
 		return "", err

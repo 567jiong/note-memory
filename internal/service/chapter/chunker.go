@@ -1,4 +1,4 @@
-package service
+package chapter
 
 import (
 	"regexp"
@@ -130,7 +130,6 @@ type chunkSentence struct {
 }
 
 // splitSentences splits text at Chinese sentence-ending punctuation.
-// Uses regexp to find sentence boundaries: 。！？… followed by optional whitespace/newline.
 func splitSentences(text string) []string {
 	if strings.TrimSpace(text) == "" {
 		return nil
@@ -208,8 +207,7 @@ func splitLongSentence(sentence string, maxChars int, basePos int) []Chunk {
 	return chunks
 }
 
-// buildChunk creates a Chunk from a buffer of sentences, keeping only the last
-// overlapSents for the next chunk's overlap window.
+// buildChunk creates a Chunk from a buffer of sentences.
 func buildChunk(buf []chunkSentence, basePos int, overlapSents int) Chunk {
 	var sb strings.Builder
 	for _, s := range buf {
@@ -241,8 +239,7 @@ func runeStrSum(ss []string) int {
 	return total
 }
 
-// runeOffset finds the position of a substring within text, searching forward
-// from hint. Returns the rune offset of substr in text.
+// runeOffset finds the position of a substring within text.
 func runeOffset(text string, hint int, substr string) int {
 	if substr == "" {
 		return hint
@@ -266,8 +263,7 @@ func runeOffset(text string, hint int, substr string) int {
 	return hint
 }
 
-// fixCharPositions recalculates CharStart/CharEnd for all chunks by scanning
-// the source text. This corrects any drift from incremental position tracking.
+// fixCharPositions recalculates CharStart/CharEnd for all chunks by scanning the source text.
 func fixCharPositions(content string, chunks []Chunk) {
 	runes := []rune(content)
 	for i := range chunks {

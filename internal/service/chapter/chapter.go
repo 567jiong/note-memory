@@ -1,4 +1,4 @@
-package service
+package chapter
 
 import (
 	"context"
@@ -8,6 +8,8 @@ import (
 	"note-memory/internal/graph"
 	"note-memory/internal/model"
 	"note-memory/internal/repository"
+	"note-memory/internal/service/entity"
+	"note-memory/internal/service/search"
 	"strings"
 	"sync"
 
@@ -16,35 +18,33 @@ import (
 	"github.com/pgvector/pgvector-go"
 )
 
-// ChapterService handles AI-powered chapter analysis.
-type ChapterService struct {
-	chapterRepo  *repository.ChapterRepo
-	chatModel    einomodel.ToolCallingChatModel
-	embedder     embedding.Embedder
-	ragSvc       *RAGService
-	searchSvc    *SearchService
-	graphWriter  *graph.GraphWriter
-	entitySvc    *EntityService
-	concurrency  int
+// Service handles AI-powered chapter analysis.
+type Service struct {
+	chapterRepo *repository.ChapterRepo
+	chatModel   einomodel.ToolCallingChatModel
+	embedder    embedding.Embedder
+	ragSvc      *search.RAGService
+	searchSvc   *search.Service
+	graphWriter *graph.GraphWriter
+	entitySvc   *entity.Service
+	concurrency int
 }
 
-func NewChapterService(chapterRepo *repository.ChapterRepo, chatModel einomodel.ToolCallingChatModel, embedder embedding.Embedder, ragSvc *RAGService, searchSvc *SearchService, graphWriter *graph.GraphWriter, entitySvc *EntityService) *ChapterService {
-	return &ChapterService{
+func NewService(chapterRepo *repository.ChapterRepo, chatModel einomodel.ToolCallingChatModel, embedder embedding.Embedder, ragSvc *search.RAGService, searchSvc *search.Service, graphWriter *graph.GraphWriter, entitySvc *entity.Service) *Service {
+	return &Service{
 		chapterRepo: chapterRepo,
 		chatModel:   chatModel,
 		embedder:    embedder,
 		ragSvc:      ragSvc,
 		searchSvc:   searchSvc,
-		graphWriter:  graphWriter,
+		graphWriter: graphWriter,
 		entitySvc:   entitySvc,
 		concurrency: 3,
 	}
 }
 
 // ParseAllChapters summarizes all unprocessed chapters for a novel.
-// Semantic search uses chunk-level embeddings (chapter_chunks), so chapter-level
-// embedding is no longer generated.
-func (s *ChapterService) ParseAllChapters(ctx context.Context, novelID int64) {
+func (s *Service) ParseAllChapters(ctx context.Context, novelID int64) {
 	for {
 		chapters, err := s.chapterRepo.ListUnprocessed(novelID, s.concurrency)
 		if err != nil {
@@ -77,7 +77,7 @@ func (s *ChapterService) ParseAllChapters(ctx context.Context, novelID int64) {
 
 // summarizeChapter sends a chapter to AI for summarization, then chunks the content
 // and generates chunk-level embeddings for semantic search.
-func (s *ChapterService) summarizeChapter(ctx context.Context, ch *model.Chapter) {
+func (s *Service) summarizeChapter(ctx context.Context, ch *model.Chapter) {
 	sr, err := summarizer.New(ctx, summarizer.Config{ChatModel: s.chatModel})
 	if err != nil {
 		log.Printf("[chapter] create summarizer agent error for novel %d chapter %d: %v", ch.NovelID, ch.ChapterNumber, err)
@@ -132,7 +132,7 @@ func (s *ChapterService) summarizeChapter(ctx context.Context, ch *model.Chapter
 }
 
 // chunkAndEmbedChapter splits chapter content into overlapping chunks and generates embeddings.
-func (s *ChapterService) chunkAndEmbedChapter(ctx context.Context, ch *model.Chapter) {
+func (s *Service) chunkAndEmbedChapter(ctx context.Context, ch *model.Chapter) {
 	content := strings.TrimSpace(ch.Content)
 	if content == "" {
 		return
@@ -179,7 +179,7 @@ func (s *ChapterService) chunkAndEmbedChapter(ctx context.Context, ch *model.Cha
 }
 
 // FillChunkEmbeddings backfills missing chunk-level embeddings.
-func (s *ChapterService) FillChunkEmbeddings(ctx context.Context, novelID int64) {
+func (s *Service) FillChunkEmbeddings(ctx context.Context, novelID int64) {
 	for {
 		chunks, err := s.chapterRepo.ListChunksWithoutEmbedding(novelID, s.concurrency*3)
 		if err != nil {

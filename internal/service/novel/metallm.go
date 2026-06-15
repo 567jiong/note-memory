@@ -1,4 +1,4 @@
-package service
+package novel
 
 import (
 	"context"
@@ -20,7 +20,6 @@ type llmMetaResult struct {
 }
 
 // extractMetaText takes the content before the first chapter as the meta region.
-// Falls back to first 4000 chars if no chapter boundary is found.
 func extractMetaText(content string) string {
 	parsed := parser.Parse(content)
 	if len(parsed) == 0 {
@@ -32,7 +31,6 @@ func extractMetaText(content string) string {
 		return truncateRunes(content, 4000)
 	}
 
-	// Find where the first chapter starts in the original content
 	idx := strings.Index(content, firstChapter.Content)
 	if idx < 0 {
 		return truncateRunes(content, 4000)
@@ -43,7 +41,6 @@ func extractMetaText(content string) string {
 }
 
 // llmExtractMeta uses LLM to extract novel metadata with retry-and-validate loop.
-// Falls back to regex parser on failure.
 func llmExtractMeta(ctx context.Context, chatModel model.ToolCallingChatModel, content string) (title, author string) {
 	metaText := extractMetaText(content)
 	if strings.TrimSpace(metaText) == "" {
@@ -104,7 +101,6 @@ func llmExtractMeta(ctx context.Context, chatModel model.ToolCallingChatModel, c
 		log.Printf("[meta] validation attempt %d failed: %v", attempt, errs)
 	}
 
-	// Fallback to regex
 	log.Printf("[meta] LLM extraction failed after 3 attempts, falling back to regex")
 	fallback := parser.DetectNovelMeta(content)
 	return fallback.Title, fallback.Author
@@ -136,21 +132,18 @@ func validateLLMMeta(r llmMetaResult) []string {
 			}
 		}
 	}
-	// author can be empty — many TXTs don't label the author
 	return errs
 }
 
 // cleanJSON extracts JSON from LLM response (handles markdown code blocks).
 func cleanJSON(s string) string {
 	s = strings.TrimSpace(s)
-	// Strip ```json ... ``` wrapper
 	if strings.HasPrefix(s, "```") {
 		s = strings.TrimPrefix(s, "```json")
 		s = strings.TrimPrefix(s, "```")
 		s = strings.TrimSuffix(s, "```")
 		s = strings.TrimSpace(s)
 	}
-	// Find first { and last }
 	start := strings.Index(s, "{")
 	end := strings.LastIndex(s, "}")
 	if start >= 0 && end > start {

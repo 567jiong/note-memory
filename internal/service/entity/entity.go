@@ -1,4 +1,4 @@
-package service
+package entity
 
 import (
 	"context"
@@ -14,27 +14,26 @@ import (
 	"github.com/pgvector/pgvector-go"
 )
 
-// EntityService manages entity embeddings for semantic entity matching.
+// Service manages entity embeddings for semantic entity matching.
 // It generates rich text descriptions for entities and stores them as vectors
 // so that users can search for characters by any alias, title, or descriptive phrase.
-type EntityService struct {
+type Service struct {
 	chapterRepo *repository.ChapterRepo
 	chatModel   einomodel.ToolCallingChatModel
 	embedder    embedding.Embedder
 }
 
-func NewEntityService(chapterRepo *repository.ChapterRepo, chatModel einomodel.ToolCallingChatModel, embedder embedding.Embedder) *EntityService {
-	return &EntityService{
+func NewService(chapterRepo *repository.ChapterRepo, chatModel einomodel.ToolCallingChatModel, embedder embedding.Embedder) *Service {
+	return &Service{
 		chapterRepo: chapterRepo,
 		chatModel:   chatModel,
 		embedder:    embedder,
 	}
 }
 
-
 // UpsertEntityFromChapter generates or updates an entity embedding for a character
 // based on the latest chapter's extracted info. Called per-chapter after AI summarization.
-func (s *EntityService) UpsertEntityFromChapter(ctx context.Context, novelID int64, char model.CharacterInfo) error {
+func (s *Service) UpsertEntityFromChapter(ctx context.Context, novelID int64, char model.CharacterInfo) error {
 	if char.Name == "" {
 		return nil
 	}
@@ -76,7 +75,7 @@ func (s *EntityService) UpsertEntityFromChapter(ctx context.Context, novelID int
 }
 
 // storeEntityEmbedding generates a vector for the description and upserts the record.
-func (s *EntityService) storeEntityEmbedding(ctx context.Context, novelID int64, name, entityType, description string) error {
+func (s *Service) storeEntityEmbedding(ctx context.Context, novelID int64, name, entityType, description string) error {
 	vecs, err := s.embedder.EmbedStrings(ctx, []string{description})
 	if err != nil || len(vecs) == 0 {
 		return fmt.Errorf("embed entity %s: %w", name, err)
@@ -106,7 +105,7 @@ func (s *EntityService) storeEntityEmbedding(ctx context.Context, novelID int64,
 
 // SearchEntities performs vector similarity search on entity embeddings.
 // Returns entity names that semantically match the query (useful for alias/identity resolution).
-func (s *EntityService) SearchEntities(ctx context.Context, query string, novelID int64, topK int) ([]string, error) {
+func (s *Service) SearchEntities(ctx context.Context, query string, novelID int64, topK int) ([]string, error) {
 	vecs, err := s.embedder.EmbedStrings(ctx, []string{query})
 	if err != nil || len(vecs) == 0 {
 		return nil, fmt.Errorf("embed search query: %w", err)

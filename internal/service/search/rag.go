@@ -1,4 +1,4 @@
-package service
+package search
 
 import (
 	"context"
@@ -20,10 +20,10 @@ type RAGService struct {
 	chapterRepo *repository.ChapterRepo
 	chatModel   einomodel.ToolCallingChatModel
 	embedder    embedding.Embedder
-	searchSvc   *SearchService
+	searchSvc   *Service
 }
 
-func NewRAGService(chapterRepo *repository.ChapterRepo, chatModel einomodel.ToolCallingChatModel, embedder embedding.Embedder, searchSvc *SearchService) *RAGService {
+func NewRAGService(chapterRepo *repository.ChapterRepo, chatModel einomodel.ToolCallingChatModel, embedder embedding.Embedder, searchSvc *Service) *RAGService {
 	return &RAGService{
 		chapterRepo: chapterRepo,
 		chatModel:   chatModel,
@@ -177,12 +177,7 @@ const (
 	agenticTopK          = 10
 )
 
-// AgenticRetrieve performs multi-step retrieval with LLM verification and query rewriting.//
-// Loop:
-//  1. Hybrid search (semantic + full-text + alias expansion)
-//  2. LLM verification: are the results sufficient to answer the query?
-//  3. If not → LLM rewrites query → go to 1 (max 3 iterations)
-//  4. Deduplicate, sort by chapter number, build context
+// AgenticRetrieve performs multi-step retrieval with LLM verification and query rewriting.
 func (s *RAGService) AgenticRetrieve(ctx context.Context, query string, novelID int64, maxChapter int, novelTitle string) (*AgenticResult, error) {
 	type scoredChapter struct {
 		chapter model.Chapter

@@ -1,4 +1,4 @@
-package service
+package novel
 
 import (
 	"bytes"
@@ -9,6 +9,7 @@ import (
 	"note-memory/internal/model"
 	"note-memory/internal/parser"
 	"note-memory/internal/repository"
+	"note-memory/internal/service/chapter"
 
 	einomodel "github.com/cloudwego/eino/components/model"
 	"golang.org/x/text/encoding/simplifiedchinese"
@@ -16,23 +17,23 @@ import (
 	"gorm.io/gorm"
 )
 
-type NovelService struct {
+type Service struct {
 	novelRepo    *repository.NovelRepo
 	chapterRepo  *repository.ChapterRepo
 	progressRepo *repository.ProgressRepo
-	chapterSvc   *ChapterService
+	chapterSvc   *chapter.Service
 	chatModel    einomodel.ToolCallingChatModel
 }
 
-func NewNovelService(
+func NewService(
 	db *gorm.DB,
 	novelRepo *repository.NovelRepo,
 	chapterRepo *repository.ChapterRepo,
 	progressRepo *repository.ProgressRepo,
-	chapterSvc *ChapterService,
+	chapterSvc *chapter.Service,
 	chatModel einomodel.ToolCallingChatModel,
-) *NovelService {
-	return &NovelService{
+) *Service {
+	return &Service{
 		novelRepo:    novelRepo,
 		chapterRepo:  chapterRepo,
 		progressRepo: progressRepo,
@@ -48,7 +49,7 @@ type UploadResult struct {
 }
 
 // Upload parses a TXT file, creates the novel record and saves chapters.
-func (s *NovelService) Upload(ctx context.Context, file multipart.File, filename string) (*UploadResult, error) {
+func (s *Service) Upload(ctx context.Context, file multipart.File, filename string) (*UploadResult, error) {
 	contentBytes, err := io.ReadAll(file)
 	if err != nil {
 		return nil, fmt.Errorf("read file: %w", err)
@@ -114,7 +115,7 @@ func (s *NovelService) Upload(ctx context.Context, file multipart.File, filename
 }
 
 // GetNovel returns a novel with its chapter list.
-func (s *NovelService) GetNovel(novelID int64) (*model.Novel, []model.Chapter, error) {
+func (s *Service) GetNovel(novelID int64) (*model.Novel, []model.Chapter, error) {
 	novel, err := s.novelRepo.GetByID(novelID)
 	if err != nil {
 		return nil, nil, err
@@ -127,12 +128,12 @@ func (s *NovelService) GetNovel(novelID int64) (*model.Novel, []model.Chapter, e
 }
 
 // ListNovels returns all novels.
-func (s *NovelService) ListNovels() ([]model.Novel, error) {
+func (s *Service) ListNovels() ([]model.Novel, error) {
 	return s.novelRepo.List()
 }
 
 // UpdateProgress sets the reading progress for a novel.
-func (s *NovelService) UpdateProgress(novelID int64, chapter int) error {
+func (s *Service) UpdateProgress(novelID int64, chapter int) error {
 	novel, err := s.novelRepo.GetByID(novelID)
 	if err != nil {
 		return err
@@ -144,32 +145,28 @@ func (s *NovelService) UpdateProgress(novelID int64, chapter int) error {
 }
 
 // GetProgress returns the reading progress for a novel.
-func (s *NovelService) GetProgress(novelID int64) (*model.ReadingProgress, error) {
+func (s *Service) GetProgress(novelID int64) (*model.ReadingProgress, error) {
 	return s.progressRepo.GetByNovel(novelID)
 }
 
 // StartParse triggers async AI parsing for all unprocessed chapters.
-func (s *NovelService) StartParse(novelID int64) {
+func (s *Service) StartParse(novelID int64) {
 	go s.chapterSvc.ParseAllChapters(context.Background(), novelID)
 }
 
 // FillEmbeddings triggers async chunk embedding backfill.
-func (s *NovelService) FillEmbeddings(novelID int64) {
+func (s *Service) FillEmbeddings(novelID int64) {
 	go s.chapterSvc.FillChunkEmbeddings(context.Background(), novelID)
 }
 
 // detectAndDecode auto-detects GBK/GB18030 encoding and converts to UTF-8.
-// Chinese novel TXT files are predominantly GBK-encoded.
 func detectAndDecode(data []byte) string {
-	// If already valid UTF-8, return as-is
 	if utf8Valid(data) {
 		return string(data)
 	}
-	// Try GBK → UTF-8
 	reader := transform.NewReader(bytes.NewReader(data), simplifiedchinese.GBK.NewDecoder())
 	decoded, err := io.ReadAll(reader)
 	if err != nil {
-		// Fallback: treat as raw bytes
 		return string(data)
 	}
 	return string(decoded)

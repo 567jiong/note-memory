@@ -3,24 +3,28 @@ package handler
 import (
 	"net/http"
 	"note-memory/internal/model"
-	"note-memory/internal/service"
+	"note-memory/internal/service/chapter"
+	"note-memory/internal/service/novel"
+	"note-memory/internal/service/qa"
+	"note-memory/internal/service/recap"
+	"note-memory/internal/service/search"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
 )
 
 type NovelHandler struct {
-	novelSvc  *service.NovelService
-	recapSvc  *service.RecapService
-	qaSvc     *service.QAService
-	searchSvc *service.SearchService
+	novelSvc  *novel.Service
+	recapSvc  *recap.Service
+	qaSvc     *qa.Service
+	searchSvc *search.Service
 }
 
 func NewNovelHandler(
-	novelSvc *service.NovelService,
-	recapSvc *service.RecapService,
-	qaSvc *service.QAService,
-	searchSvc *service.SearchService,
+	novelSvc *novel.Service,
+	recapSvc *recap.Service,
+	qaSvc *qa.Service,
+	searchSvc *search.Service,
 ) *NovelHandler {
 	return &NovelHandler{novelSvc: novelSvc, recapSvc: recapSvc, qaSvc: qaSvc, searchSvc: searchSvc}
 }
@@ -264,3 +268,6 @@ func (h *NovelHandler) Search(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"results": out, "query": query, "mode": "hybrid"})
 }
+
+// Ensure chapter import is used for the type reference via novel.Service.
+var _ = (*chapter.Service)(nil)

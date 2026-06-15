@@ -1,10 +1,11 @@
-package service
+package search
 
 import (
 	"context"
 	"fmt"
 	"note-memory/internal/model"
 	"note-memory/internal/repository"
+	"note-memory/internal/service/entity"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,11 +18,11 @@ import (
 	"github.com/pgvector/pgvector-go"
 )
 
-// SearchService provides hybrid search with jieba tokenization.
-type SearchService struct {
+// Service provides hybrid search with jieba tokenization.
+type Service struct {
 	chapterRepo *repository.ChapterRepo
 	embedder    embedding.Embedder
-	entitySvc   *EntityService
+	entitySvc   *entity.Service
 
 	// jieba segmenter (lazy init, thread-safe after first use)
 	segmenter *gse.Segmenter
@@ -32,8 +33,8 @@ type SearchService struct {
 	novelDict map[int64]string // novelID → custom dict file path
 }
 
-func NewSearchService(chapterRepo *repository.ChapterRepo, embedder embedding.Embedder, entitySvc *EntityService) *SearchService {
-	return &SearchService{
+func NewService(chapterRepo *repository.ChapterRepo, embedder embedding.Embedder, entitySvc *entity.Service) *Service {
+	return &Service{
 		chapterRepo: chapterRepo,
 		embedder:    embedder,
 		entitySvc:   entitySvc,
@@ -42,7 +43,7 @@ func NewSearchService(chapterRepo *repository.ChapterRepo, embedder embedding.Em
 }
 
 // getSegmenter returns the jieba segmenter (lazy init).
-func (s *SearchService) getSegmenter() *gse.Segmenter {
+func (s *Service) getSegmenter() *gse.Segmenter {
 	s.segOnce.Do(func() {
 		seg := new(gse.Segmenter)
 		// Use gse's built-in dictionary (jieba compatible)
@@ -56,7 +57,7 @@ func (s *SearchService) getSegmenter() *gse.Segmenter {
 
 // buildCustomDict creates a custom dictionary file for a novel from extracted entities.
 // Returns the path to the dict file, or empty string if no entities available.
-func (s *SearchService) buildCustomDict(novelID int64) string {
+func (s *Service) buildCustomDict(novelID int64) string {
 	aliases, err := s.chapterRepo.ListAliases(novelID)
 	if err != nil || len(aliases) == 0 {
 		return ""
@@ -100,7 +101,7 @@ func (s *SearchService) buildCustomDict(novelID int64) string {
 }
 
 // loadCustomDict loads a custom dictionary into the segmenter for a specific novel.
-func (s *SearchService) loadCustomDict(path string) *gse.Segmenter {
+func (s *Service) loadCustomDict(path string) *gse.Segmenter {
 	// Create a fresh segmenter with custom dict
 	seg := new(gse.Segmenter)
 	if path != "" {
@@ -115,7 +116,7 @@ func (s *SearchService) loadCustomDict(path string) *gse.Segmenter {
 
 // tokenizeText tokenizes text using jieba + custom dict + bigram fallback.
 // Returns space-separated tokens for tsvector indexing.
-func (s *SearchService) tokenizeText(text string, customDictPath string) string {
+func (s *Service) tokenizeText(text string, customDictPath string) string {
 	if text == "" {
 		return ""
 	}
@@ -161,7 +162,7 @@ func (s *SearchService) tokenizeText(text string, customDictPath string) string 
 
 // tokenizeForQuery tokenizes a search query for tsquery.
 // Uses jieba tokens only (no bigram fallback needed — query terms should be precise).
-func (s *SearchService) tokenizeForQuery(query string, customDictPath string) string {
+func (s *Service) tokenizeForQuery(query string, customDictPath string) string {
 	if query == "" {
 		return ""
 	}
@@ -228,7 +229,7 @@ func extractBigrams(text string) []string {
 // ---- Search Index Management ----
 
 // BuildSearchText generates tokenized search text from a chapter's data.
-func (s *SearchService) BuildSearchText(novelID int64, chapterTitle, summary string, characters []model.CharacterInfo, events []model.EventInfo) string {
+func (s *Service) BuildSearchText(novelID int64, chapterTitle, summary string, characters []model.CharacterInfo, events []model.EventInfo) string {
 	customDict := s.buildCustomDict(novelID)
 
 	var parts []string
@@ -260,14 +261,14 @@ func (s *SearchService) BuildSearchText(novelID int64, chapterTitle, summary str
 }
 
 // UpdateSearchIndex updates search_text + tsv for a chapter.
-func (s *SearchService) UpdateSearchIndex(chapterID int64, novelID int64, chapterTitle, summary string, characters []model.CharacterInfo, events []model.EventInfo) error {
+func (s *Service) UpdateSearchIndex(chapterID int64, novelID int64, chapterTitle, summary string, characters []model.CharacterInfo, events []model.EventInfo) error {
 	searchText := s.BuildSearchText(novelID, chapterTitle, summary, characters, events)
 	return s.chapterRepo.UpdateSearchText(chapterID, searchText)
 }
 
 // UpsertChapterAliases incrementally writes aliases from a single chapter's characters.
 // Called per-chapter after AI summarization, avoiding the fragility of batch-at-end.
-func (s *SearchService) UpsertChapterAliases(novelID int64, characters []model.CharacterInfo) error {
+func (s *Service) UpsertChapterAliases(novelID int64, characters []model.CharacterInfo) error {
 	if len(characters) == 0 {
 		return nil
 	}
@@ -299,13 +300,13 @@ func (s *SearchService) UpsertChapterAliases(novelID int64, characters []model.C
 }
 
 // RefreshDictForNovel rebuilds the custom jieba dictionary for a novel after incremental updates.
-func (s *SearchService) RefreshDictForNovel(novelID int64) {
+func (s *Service) RefreshDictForNovel(novelID int64) {
 	s.buildCustomDict(novelID)
 }
 
 // RebuildAliasIndex rebuilds entity_aliases for a novel from all chapters.
 // Use this for one-time repair; day-to-day aliases are written incrementally by UpsertChapterAliases.
-func (s *SearchService) RebuildAliasIndex(novelID int64) error {
+func (s *Service) RebuildAliasIndex(novelID int64) error {
 	chapters, err := s.chapterRepo.ListByNovel(novelID)
 	if err != nil {
 		return fmt.Errorf("list chapters: %w", err)
@@ -376,7 +377,7 @@ func (s *SearchService) RebuildAliasIndex(novelID int64) error {
 // Weights: semantic 0.7 + full-text 0.3
 // Semantic branch searches chapter_chunks.embedding and aggregates by chapter.
 // Falls back to pure full-text search if embeddings are unavailable.
-func (s *SearchService) HybridSearch(ctx context.Context, query string, novelID int64, maxChapter int, topK int) ([]model.HybridSearchResult, error) {
+func (s *Service) HybridSearch(ctx context.Context, query string, novelID int64, maxChapter int, topK int) ([]model.HybridSearchResult, error) {
 	if topK <= 0 {
 		topK = 10
 	}
@@ -468,7 +469,7 @@ func mergeHybridResults(semChapters []model.Chapter, semScores []float64, ftResu
 }
 
 // getNovelDict returns the custom dict path for a novel, or empty string.
-func (s *SearchService) getNovelDict(novelID int64) string {
+func (s *Service) getNovelDict(novelID int64) string {
 	s.dictMu.RLock()
 	defer s.dictMu.RUnlock()
 	return s.novelDict[novelID]
@@ -476,7 +477,7 @@ func (s *SearchService) getNovelDict(novelID int64) string {
 
 // expandWithAliases expands query with known aliases, but only when unambiguous.
 // If "厉飞雨" is both 韩立's alias AND a real character's name, it will NOT be expanded.
-func (s *SearchService) expandWithAliases(query string, novelID int64) string {
+func (s *Service) expandWithAliases(query string, novelID int64) string {
 	aliases, err := s.chapterRepo.ListAliases(novelID)
 	if err != nil || len(aliases) == 0 {
 		return query
