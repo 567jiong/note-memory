@@ -179,6 +179,7 @@ func (s *RAGService) AgenticRetrieve(ctx context.Context, query string, novelID 
 		TimelineFunc:  s.graphReader.TimelineTool(),
 		RelationsFunc: s.graphReader.RelationsTool(),
 		EntityFunc:    s.entitySvc.EntityTool(),
+		ChaptersFunc:  s.searchSvc.ChaptersTool(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create agentic rag agent: %w", err)

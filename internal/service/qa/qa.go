@@ -68,6 +68,7 @@ func (s *Service) AskQuestion(ctx context.Context, novelID int64, question strin
 			TimelineFunc:  s.graphReader.TimelineTool(),
 			RelationsFunc: s.graphReader.RelationsTool(),
 			EntityFunc:    s.entitySvc.EntityTool(),
+			ChaptersFunc:  s.searchSvc.ChaptersTool(),
 		},
 	})
 	if err != nil {

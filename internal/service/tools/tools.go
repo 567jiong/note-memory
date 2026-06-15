@@ -26,10 +26,15 @@ type Deps struct {
 
 	// EntityFunc resolves entity aliases/descriptions to canonical names via vector search.
 	EntityFunc func(ctx context.Context, query string, novelID int64, topK int) (string, error)
+
+	// ChaptersFunc returns chapter summaries for a given range (start to end).
+	// start=0 and end=0 triggers "recent N" mode using the caller's N parameter.
+	ChaptersFunc func(ctx context.Context, novelID int64, start, end, maxChapter int) (string, error)
 }
 
 // Build creates the full tool set for a Retrieval / Reading Memory agent.
-// Returns four tools: search_chapters, resolve_entity, query_timeline, query_relations.
+// Returns five tools: search_chapters, resolve_entity, query_timeline, query_relations,
+// get_chapters.
 func Build(deps Deps) ([]tool.BaseTool, error) {
 	searchTool, err := newSearchChaptersTool(deps)
 	if err != nil {
@@ -51,7 +56,12 @@ func Build(deps Deps) ([]tool.BaseTool, error) {
 		return nil, fmt.Errorf("create query_relations tool: %w", err)
 	}
 
-	return []tool.BaseTool{searchTool, resolveTool, timelineTool, relationsTool}, nil
+	chaptersTool, err := newGetChaptersTool(deps)
+	if err != nil {
+		return nil, fmt.Errorf("create get_chapters tool: %w", err)
+	}
+
+	return []tool.BaseTool{searchTool, resolveTool, timelineTool, relationsTool, chaptersTool}, nil
 }
 
 // --- search_chapters ---
@@ -98,6 +108,47 @@ func newQueryTimelineTool(deps Deps) (tool.InvokableTool, error) {
 				return `[]`, nil
 			}
 			return deps.TimelineFunc(ctx, deps.NovelID, input.CharacterName, deps.MaxChapter)
+		},
+	)
+}
+
+// --- get_chapters ---
+
+func newGetChaptersTool(deps Deps) (tool.InvokableTool, error) {
+	return utils.InferTool(
+		"get_chapters",
+		"按章节范围获取摘要和出场人物。每章返回章节号、标题、摘要、出场人物列表和事件列表。"+
+			"适合回答：'最近主角在做什么''最近发生了什么''第X到Y章讲了什么''第X章讲了什么'。"+
+			"三种用法：1) 传 n 获取最近 N 章（如 n=5）；"+
+			"2) 传 start+end 指定范围（如 start=100,end=110）；"+
+			"3) 传 start 获取单章（如 start=50,end=50）。"+
+			"n 默认 5，最大 20。范围不会超出用户阅读进度。",
+		func(ctx context.Context, input *GetChaptersInput) (string, error) {
+			if deps.ChaptersFunc == nil {
+				return `[]`, nil
+			}
+			start, end := input.Start, input.End
+			if start <= 0 && end <= 0 {
+				// "recent N" mode
+				n := input.N
+				if n <= 0 {
+					n = 5
+				}
+				if n > 20 {
+					n = 20
+				}
+				start = 0 // signal to the func to use "recent N"
+				end = n
+			} else {
+				// range mode
+				if start <= 0 {
+					start = 1
+				}
+				if end <= 0 {
+					end = start
+				}
+			}
+			return deps.ChaptersFunc(ctx, deps.NovelID, start, end, deps.MaxChapter)
 		},
 	)
 }

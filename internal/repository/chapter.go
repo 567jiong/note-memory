@@ -49,19 +49,29 @@ func (r *ChapterRepo) ListUpToChapter(novelID int64, maxChapter int) ([]model.Ch
 	return chapters, err
 }
 
-// ListRecentChapters returns the last N chapters up to maxChapter.
+// ListRecentChapters returns the last N chapters up to maxChapter, newest first.
 func (r *ChapterRepo) ListRecentChapters(novelID int64, maxChapter int, n int) ([]model.Chapter, error) {
 	var chapters []model.Chapter
 	err := r.db.Where("novel_id = ? AND chapter_number <= ?", novelID, maxChapter).
 		Order("chapter_number DESC").Limit(n).Find(&chapters).Error
-	if err != nil {
-		return nil, err
+	return chapters, err
+}
+
+// ListChaptersInRange returns chapters in a specific range [start, end], clamped to maxChapter.
+func (r *ChapterRepo) ListChaptersInRange(novelID int64, start, end, maxChapter int) ([]model.Chapter, error) {
+	if start < 1 {
+		start = 1
 	}
-	// Reverse to chronological order
-	for i, j := 0, len(chapters)-1; i < j; i, j = i+1, j-1 {
-		chapters[i], chapters[j] = chapters[j], chapters[i]
+	if end > maxChapter {
+		end = maxChapter
 	}
-	return chapters, nil
+	if start > end {
+		return nil, nil
+	}
+	var chapters []model.Chapter
+	err := r.db.Where("novel_id = ? AND chapter_number >= ? AND chapter_number <= ?", novelID, start, end).
+		Order("chapter_number ASC").Find(&chapters).Error
+	return chapters, err
 }
 
 // UpdateSummary updates the summary and extracted info for a chapter.

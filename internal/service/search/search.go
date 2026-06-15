@@ -317,3 +317,48 @@ func (s *Service) SearchTool() func(ctx context.Context, query string, novelID i
 		return string(b), nil
 	}
 }
+
+// ChaptersTool returns a closure matching tools.Deps.ChaptersFunc.
+// It fetches chapter summaries for a given range, with "recent N" mode triggered
+// when start=0 (end holds N).
+func (s *Service) ChaptersTool() func(ctx context.Context, novelID int64, start, end, maxChapter int) (string, error) {
+	return func(ctx context.Context, novelID int64, start, end, maxChapter int) (string, error) {
+		var chapters []model.Chapter
+		var err error
+		if start <= 0 {
+			// "recent N" mode: end holds the value of N
+			n := end
+			if n <= 0 {
+				n = 5
+			}
+			chapters, err = s.chapterRepo.ListRecentChapters(novelID, maxChapter, n)
+		} else {
+			chapters, err = s.chapterRepo.ListChaptersInRange(novelID, start, end, maxChapter)
+		}
+		if err != nil {
+			return "", err
+		}
+		var out []tools.ChapterSummary
+		for _, ch := range chapters {
+			chars, _ := model.UnmarshalCharacters(ch.Characters)
+			charNames := make([]string, 0, len(chars))
+			for _, c := range chars {
+				charNames = append(charNames, c.Name)
+			}
+			events, _ := model.UnmarshalEvents(ch.Events)
+			eventTitles := make([]string, 0, len(events))
+			for _, e := range events {
+				eventTitles = append(eventTitles, e.Title)
+			}
+			out = append(out, tools.ChapterSummary{
+				ChapterNum: ch.ChapterNumber,
+				Title:      ch.Title,
+				Summary:    ch.Summary,
+				Characters: charNames,
+				Events:     eventTitles,
+			})
+		}
+		b, _ := json.Marshal(out)
+		return string(b), nil
+	}
+}

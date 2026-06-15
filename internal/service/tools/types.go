@@ -45,3 +45,19 @@ type RelationEntry struct {
 type ResolveEntityInput struct {
 	Description string `json:"description" jsonschema_description:"用户描述的人物特征、别名、称号或身份"`
 }
+
+// GetChaptersInput is the input for the get_chapters tool.
+type GetChaptersInput struct {
+	Start int `json:"start" jsonschema_description:"起始章节号，默认 maxChapter - n + 1"`
+	End   int `json:"end" jsonschema_description:"结束章节号，默认 maxChapter"`
+	N     int `json:"n" jsonschema_description:"最近 N 章快捷写法，默认 5，最大 20。start 和 end 均为 0 时生效"`
+}
+
+// ChapterSummary is a single chapter summary returned to the LLM.
+type ChapterSummary struct {
+	ChapterNum int      `json:"chapter_num"`
+	Title      string   `json:"title"`
+	Summary    string   `json:"summary"`
+	Characters []string `json:"characters"`
+	Events     []string `json:"events"`
+}
