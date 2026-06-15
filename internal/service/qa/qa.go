@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"note-memory/internal/graph"
-	"note-memory/internal/model"
 	"note-memory/internal/repository"
 	"note-memory/internal/service/entity"
 	"note-memory/internal/service/search"
@@ -75,25 +74,4 @@ func (s *Service) AskQuestion(ctx context.Context, novelID int64, question strin
 		return "", fmt.Errorf("create agent: %w", err)
 	}
 	return runReadingAgent(ctx, readingAgent, novelTitle, maxChapter, question)
-}
-
-// SearchChapters performs semantic search and returns formatted results.
-func (s *Service) SearchChapters(ctx context.Context, novelID int64, query string) ([]model.Chapter, []float64, error) {
-	progress, err := s.progressRepo.GetByNovel(novelID)
-	if err != nil {
-		return nil, nil, fmt.Errorf("get progress: %w", err)
-	}
-
-	results, err := s.searchSvc.HybridSearch(ctx, query, novelID, progress.CurrentChapter, 10)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	chapters := make([]model.Chapter, 0, len(results))
-	scores := make([]float64, 0, len(results))
-	for _, r := range results {
-		chapters = append(chapters, r.Chapter)
-		scores = append(scores, r.FinalScore)
-	}
-	return chapters, scores, nil
 }

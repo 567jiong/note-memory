@@ -88,108 +88,6 @@ func (r *ChapterRepo) ListUnprocessed(novelID int64, limit int) ([]model.Chapter
 	return chapters, err
 }
 
-// SearchSimilar performs cosine similarity search using pgvector.
-// maxChapter enforces spoiler-free boundary. Returns chapters and similarity scores.
-func (r *ChapterRepo) SearchSimilar(novelID int64, maxChapter int, queryVec pgvector.Vector, topK int) ([]model.Chapter, []float64, error) {
-	type result struct {
-		model.Chapter
-		Score float64
-	}
-
-	var results []result
-	err := r.db.Raw(`
-		SELECT c.*, 1 - (c.embedding <=> ?) AS score
-		FROM chapters c
-		WHERE c.novel_id = ?
-		  AND c.chapter_number <= ?
-		  AND c.embedding IS NOT NULL
-		ORDER BY c.embedding <=> ?
-		LIMIT ?
-	`, queryVec, novelID, maxChapter, queryVec, topK).Scan(&results).Error
-
-	if err != nil {
-		return nil, nil, fmt.Errorf("vector search: %w", err)
-	}
-
-	chapters := make([]model.Chapter, 0, len(results))
-	scores := make([]float64, 0, len(results))
-	for _, r := range results {
-		chapters = append(chapters, r.Chapter)
-		scores = append(scores, r.Score)
-	}
-	return chapters, scores, nil
-}
-
-// UpdateEmbedding updates a single chapter's embedding vector.
-func (r *ChapterRepo) UpdateEmbedding(chapterID int64, vec []float32) error {
-	return r.db.Model(&model.Chapter{}).Where("id = ?", chapterID).
-		Update("embedding", pgvector.NewVector(vec)).Error
-}
-
-// BatchUpdateEmbedding updates embeddings for multiple chapters at once.
-func (r *ChapterRepo) BatchUpdateEmbedding(chapterIDs []int64, embeddings []pgvector.Vector) error {
-	if len(chapterIDs) != len(embeddings) {
-		return fmt.Errorf("chapterIDs and embeddings length mismatch: %d vs %d", len(chapterIDs), len(embeddings))
-	}
-	for i, id := range chapterIDs {
-		if err := r.db.Model(&model.Chapter{}).Where("id = ?", id).
-			Update("embedding", embeddings[i]).Error; err != nil {
-			return fmt.Errorf("update embedding for chapter %d: %w", id, err)
-		}
-	}
-	return nil
-}
-
-// ListWithoutEmbedding returns chapters that have summaries but no embeddings.
-func (r *ChapterRepo) ListWithoutEmbedding(novelID int64, limit int) ([]model.Chapter, error) {
-	var chapters []model.Chapter
-	err := r.db.Where("novel_id = ? AND summary != '' AND embedding IS NULL", novelID).
-		Order("chapter_number ASC").Limit(limit).Find(&chapters).Error
-	return chapters, err
-}
-
-// HybridSearch combines pgvector + tsvector search with weighted scoring.
-// semanticWeight: 0.0~1.0, text weight = 1 - semanticWeight.
-func (r *ChapterRepo) HybridSearch(novelID int64, maxChapter int, queryVec pgvector.Vector, tsQuery string, topK int) ([]model.HybridSearchResult, error) {
-	const semWeight = 0.7
-
-	type rawRow struct {
-		model.Chapter
-		SemScore  float64
-		TextScore float64
-	}
-
-	var rows []rawRow
-
-	// Use COALESCE to handle NULL tsv columns gracefully
-	err := r.db.Raw(`
-		SELECT c.*,
-		       1 - (c.embedding <=> ?) AS sem_score,
-		       COALESCE(ts_rank(c.tsv, to_tsquery('simple', ?)), 0) AS text_score
-		FROM chapters c
-		WHERE c.novel_id = ?
-		  AND c.chapter_number <= ?
-		  AND c.embedding IS NOT NULL
-		ORDER BY (? * (1 - (c.embedding <=> ?)) + ? * COALESCE(ts_rank(c.tsv, to_tsquery('simple', ?)), 0)) DESC
-		LIMIT ?
-	`, queryVec, tsQuery, novelID, maxChapter, semWeight, queryVec, 1-semWeight, tsQuery, topK).Scan(&rows).Error
-
-	if err != nil {
-		return nil, fmt.Errorf("hybrid search: %w", err)
-	}
-
-	results := make([]model.HybridSearchResult, 0, len(rows))
-	for _, row := range rows {
-		results = append(results, model.HybridSearchResult{
-			Chapter:    row.Chapter,
-			SemScore:   row.SemScore,
-			TextScore:  row.TextScore,
-			FinalScore: semWeight*row.SemScore + (1-semWeight)*row.TextScore,
-		})
-	}
-	return results, nil
-}
-
 // FullTextSearch performs pure tsvector full-text search (no embedding required).
 // Used as fallback when embeddings are unavailable.
 func (r *ChapterRepo) FullTextSearch(novelID int64, maxChapter int, tsQuery string, topK int) ([]model.HybridSearchResult, error) {
@@ -330,6 +228,8 @@ func (r *ChapterRepo) SearchChunks(novelID int64, maxChapter int, queryVec pgvec
 }
 
 // SearchChunksWithContent returns chunk search results with matched content, deduplicated by chapter.
+// Uses DISTINCT ON to pick the best chunk per chapter at the SQL level, so the LIMIT
+// applies to unique chapters rather than individual chunks.
 func (r *ChapterRepo) SearchChunksWithContent(novelID int64, maxChapter int, queryVec pgvector.Vector, topK int) ([]model.Chapter, []string, []float64, error) {
 	type row struct {
 		model.Chapter
@@ -339,40 +239,31 @@ func (r *ChapterRepo) SearchChunksWithContent(novelID int64, maxChapter int, que
 
 	var rows []row
 	err := r.db.Raw(`
-		SELECT c.*, cc.content AS chunk_content,
-		       1 - (cc.embedding <=> ?) AS score
-		FROM chapter_chunks cc
-		JOIN chapters c ON c.id = cc.chapter_id
-		WHERE cc.novel_id = ?
-		  AND c.chapter_number <= ?
-		  AND cc.embedding IS NOT NULL
+		SELECT * FROM (
+			SELECT DISTINCT ON (c.id) c.*, cc.content AS chunk_content,
+			       1 - (cc.embedding <=> ?) AS score
+			FROM chapter_chunks cc
+			JOIN chapters c ON c.id = cc.chapter_id
+			WHERE cc.novel_id = ?
+			  AND c.chapter_number <= ?
+			  AND cc.embedding IS NOT NULL
+			ORDER BY c.id, cc.embedding <=> ?
+		) sub
 		ORDER BY score DESC
 		LIMIT ?
-	`, queryVec, novelID, maxChapter, topK).Scan(&rows).Error
+	`, queryVec, novelID, maxChapter, queryVec, topK).Scan(&rows).Error
 
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("chunk search with content: %w", err)
 	}
 
-	// Deduplicate by chapter ID, keeping highest score
-	seen := make(map[int64]int)
 	chapters := make([]model.Chapter, 0, len(rows))
 	contents := make([]string, 0, len(rows))
 	scores := make([]float64, 0, len(rows))
-
 	for _, row := range rows {
-		if idx, ok := seen[row.Chapter.ID]; ok {
-			if row.Score > scores[idx] {
-				chapters[idx] = row.Chapter
-				contents[idx] = row.ChunkContent
-				scores[idx] = row.Score
-			}
-		} else {
-			seen[row.Chapter.ID] = len(chapters)
-			chapters = append(chapters, row.Chapter)
-			contents = append(contents, row.ChunkContent)
-			scores = append(scores, row.Score)
-		}
+		chapters = append(chapters, row.Chapter)
+		contents = append(contents, row.ChunkContent)
+		scores = append(scores, row.Score)
 	}
 	return chapters, contents, scores, nil
 }

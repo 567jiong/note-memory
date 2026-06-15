@@ -197,6 +197,10 @@ func toInt(v any) int {
 		return int(n)
 	case float64:
 		return int(n)
+	case string:
+		var val int
+		fmt.Sscanf(n, "%d", &val)
+		return val
 	}
 	return 0
 }

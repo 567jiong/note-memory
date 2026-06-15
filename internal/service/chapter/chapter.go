@@ -12,14 +12,15 @@ import (
 	"strings"
 	"sync"
 
-	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/components/embedding"
+	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/pgvector/pgvector-go"
 )
 
 // Service handles AI-powered chapter analysis.
 type Service struct {
 	chapterRepo *repository.ChapterRepo
+	novelRepo   *repository.NovelRepo
 	chatModel   einomodel.ToolCallingChatModel
 	embedder    embedding.Embedder
 	ragSvc      *search.RAGService
@@ -29,9 +30,10 @@ type Service struct {
 	concurrency int
 }
 
-func NewService(chapterRepo *repository.ChapterRepo, chatModel einomodel.ToolCallingChatModel, embedder embedding.Embedder, ragSvc *search.RAGService, searchSvc *search.Service, graphWriter *graph.GraphWriter, entitySvc *entity.Service) *Service {
+func NewService(chapterRepo *repository.ChapterRepo, novelRepo *repository.NovelRepo, chatModel einomodel.ToolCallingChatModel, embedder embedding.Embedder, ragSvc *search.RAGService, searchSvc *search.Service, graphWriter *graph.GraphWriter, entitySvc *entity.Service) *Service {
 	return &Service{
 		chapterRepo: chapterRepo,
+		novelRepo:   novelRepo,
 		chatModel:   chatModel,
 		embedder:    embedder,
 		ragSvc:      ragSvc,
@@ -112,9 +114,14 @@ func (s *Service) summarizeChapter(ctx context.Context, ch *model.Chapter) {
 	// Chunk content into overlapping segments and generate chunk embeddings
 	s.chunkAndEmbedChapter(ctx, ch)
 
-	// Sync to Neo4j knowledge graph (novel title/author set by first sync)
+	// Sync to Neo4j knowledge graph
 	if s.graphWriter != nil && s.graphWriter.IsEnabled() {
-		_ = s.graphWriter.SyncChapter(ctx, &model.Novel{ID: ch.NovelID}, ch, charsJSON, eventsJSON)
+		novel, err := s.novelRepo.GetByID(ch.NovelID)
+		if err != nil {
+			log.Printf("[chapter] graph sync: get novel %d: %v", ch.NovelID, err)
+		} else if err := s.graphWriter.SyncChapter(ctx, novel, ch, charsJSON, eventsJSON); err != nil {
+			log.Printf("[chapter] graph sync error for chapter %d: %v", ch.ChapterNumber, err)
+		}
 	}
 
 	// Generate/update entity embeddings for semantic alias matching
@@ -159,25 +166,39 @@ func (s *Service) chunkAndEmbedChapter(ctx context.Context, ch *model.Chapter) {
 		return
 	}
 
+	// Generate embeddings in batch
+	contents := make([]string, len(records))
 	for i := range records {
-		vecs, err := s.embedder.EmbedStrings(ctx, []string{records[i].Content})
-		if err != nil || len(vecs) == 0 {
-			log.Printf("[chunk] embedding error for chapter %d chunk %d: %v", ch.ChapterNumber, i+1, err)
-			continue
-		}
-		vec := make([]float32, len(vecs[0]))
-		for j, v := range vecs[0] {
+		contents[i] = records[i].Content
+	}
+
+	vecs, err := s.embedder.EmbedStrings(ctx, contents)
+	if err != nil {
+		log.Printf("[chunk] batch embedding error for chapter %d: %v", ch.ChapterNumber, err)
+		return
+	}
+	if len(vecs) != len(records) {
+		log.Printf("[chunk] embedding count mismatch for chapter %d: got %d, want %d", ch.ChapterNumber, len(vecs), len(records))
+		return
+	}
+
+	chunkIDs := make([]int64, len(records))
+	embeddings := make([]pgvector.Vector, len(records))
+	for i := range records {
+		vec := make([]float32, len(vecs[i]))
+		for j, v := range vecs[i] {
 			vec[j] = float32(v)
 		}
-		if err := s.chapterRepo.BatchUpdateChunkEmbedding(
-			[]int64{records[i].ID}, []pgvector.Vector{pgvector.NewVector(vec)},
-		); err != nil {
-			log.Printf("[chunk] save embedding error for chapter %d chunk %d: %v", ch.ChapterNumber, i+1, err)
-		}
+		chunkIDs[i] = records[i].ID
+		embeddings[i] = pgvector.NewVector(vec)
+	}
+
+	if err := s.chapterRepo.BatchUpdateChunkEmbedding(chunkIDs, embeddings); err != nil {
+		log.Printf("[chunk] batch save embedding error for chapter %d: %v", ch.ChapterNumber, err)
 	}
 }
 
-// FillChunkEmbeddings backfills missing chunk-level embeddings.
+// FillChunkEmbeddings backfills missing chunk-level embeddings in batch.
 func (s *Service) FillChunkEmbeddings(ctx context.Context, novelID int64) {
 	for {
 		chunks, err := s.chapterRepo.ListChunksWithoutEmbedding(novelID, s.concurrency*3)
@@ -190,31 +211,55 @@ func (s *Service) FillChunkEmbeddings(ctx context.Context, novelID int64) {
 			return
 		}
 
+		// Batch generate embeddings for all chunks in one API call
+		contents := make([]string, len(chunks))
+		for i := range chunks {
+			contents[i] = chunks[i].Content
+		}
+
+		vecs, err := s.embedder.EmbedStrings(ctx, contents)
+		if err != nil {
+			log.Printf("[chunk] batch embedding error: %v", err)
+			return
+		}
+		if len(vecs) != len(chunks) {
+			log.Printf("[chunk] embedding count mismatch: got %d, want %d", len(vecs), len(chunks))
+			return
+		}
+
+		// Build vector records
+		chunkIDs := make([]int64, len(chunks))
+		embeddings := make([]pgvector.Vector, len(chunks))
+		for i := range chunks {
+			vec := make([]float32, len(vecs[i]))
+			for j, v := range vecs[i] {
+				vec[j] = float32(v)
+			}
+			chunkIDs[i] = chunks[i].ID
+			embeddings[i] = pgvector.NewVector(vec)
+		}
+
+		// Concurrently save embeddings in sub-batches (DB writes are I/O bound)
 		var wg sync.WaitGroup
 		sem := make(chan struct{}, s.concurrency)
-
-		for i := range chunks {
-			ck := chunks[i]
+		batchSize := (len(chunks) + s.concurrency - 1) / s.concurrency
+		if batchSize < 1 {
+			batchSize = 1
+		}
+		for start := 0; start < len(chunks); start += batchSize {
+			end := start + batchSize
+			if end > len(chunks) {
+				end = len(chunks)
+			}
 			wg.Add(1)
 			sem <- struct{}{}
-			go func(c model.ChapterChunk) {
+			go func(ids []int64, embs []pgvector.Vector) {
 				defer wg.Done()
 				defer func() { <-sem }()
-				vecs, err := s.embedder.EmbedStrings(ctx, []string{c.Content})
-				if err != nil || len(vecs) == 0 {
-					log.Printf("[chunk] embedding error for chunk %d: %v", c.ID, err)
-					return
+				if err := s.chapterRepo.BatchUpdateChunkEmbedding(ids, embs); err != nil {
+					log.Printf("[chunk] batch save embedding error: %v", err)
 				}
-				vec := make([]float32, len(vecs[0]))
-				for j, v := range vecs[0] {
-					vec[j] = float32(v)
-				}
-				if err := s.chapterRepo.BatchUpdateChunkEmbedding(
-					[]int64{c.ID}, []pgvector.Vector{pgvector.NewVector(vec)},
-				); err != nil {
-					log.Printf("[chunk] save embedding error for chunk %d: %v", c.ID, err)
-				}
-			}(ck)
+			}(chunkIDs[start:end], embeddings[start:end])
 		}
 		wg.Wait()
 	}

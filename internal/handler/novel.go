@@ -226,24 +226,7 @@ func (h *NovelHandler) Search(c *gin.Context) {
 
 	results, err := h.searchSvc.HybridSearch(c.Request.Context(), query, id, progress.CurrentChapter, 10)
 	if err != nil {
-		// Fallback to semantic-only
-		chapters, scores, err2 := h.qaSvc.SearchChapters(c.Request.Context(), id, query)
-		if err2 != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "搜索失败: " + err.Error()})
-			return
-		}
-		type sr struct {
-			Chapter model.Chapter `json:"chapter"`
-			Score   float64       `json:"score"`
-		}
-		out := make([]sr, 0, len(chapters))
-		for i, ch := range chapters {
-			out = append(out, sr{Chapter: ch, Score: scores[i]})
-		}
-		if out == nil {
-			out = []sr{}
-		}
-		c.JSON(http.StatusOK, gin.H{"results": out, "query": query, "mode": "semantic_only"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "搜索失败: " + err.Error()})
 		return
 	}
 
@@ -261,9 +244,6 @@ func (h *NovelHandler) Search(c *gin.Context) {
 			TextScore:  r.TextScore,
 			FinalScore: r.FinalScore,
 		})
-	}
-	if out == nil {
-		out = []sr{}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"results": out, "query": query, "mode": "hybrid"})

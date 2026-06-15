@@ -6,6 +6,7 @@ import (
 	"note-memory/internal/model"
 	"note-memory/internal/repository"
 	"encoding/json"
+	"log"
 	"note-memory/internal/service/entity"
 	"note-memory/internal/service/tools"
 	"os"
@@ -13,7 +14,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"unicode/utf8"
 
 	"github.com/cloudwego/eino/components/embedding"
 	"github.com/go-ego/gse"
@@ -30,9 +30,10 @@ type Service struct {
 	segmenter *gse.Segmenter
 	segOnce   sync.Once
 
-	// per-novel custom dict paths
+	// per-novel custom dict paths and cached segmenters
 	dictMu    sync.RWMutex
-	novelDict map[int64]string // novelID → custom dict file path
+	novelDict map[int64]string            // novelID → custom dict file path
+	novelSeg  map[int64]*gse.Segmenter    // novelID → cached segmenter with custom dict loaded
 }
 
 func NewService(chapterRepo *repository.ChapterRepo, embedder embedding.Embedder, entitySvc *entity.Service) *Service {
@@ -41,6 +42,7 @@ func NewService(chapterRepo *repository.ChapterRepo, embedder embedding.Embedder
 		embedder:    embedder,
 		entitySvc:   entitySvc,
 		novelDict:   make(map[int64]string),
+		novelSeg:    make(map[int64]*gse.Segmenter),
 	}
 }
 
@@ -58,10 +60,29 @@ func (s *Service) getSegmenter() *gse.Segmenter {
 // ---- Custom Dictionary ----
 
 // buildCustomDict creates a custom dictionary file for a novel from extracted entities.
+// Idempotent — only builds once per novel (subsequent calls return cached path).
 // Returns the path to the dict file, or empty string if no entities available.
 func (s *Service) buildCustomDict(novelID int64) string {
+	// Fast path: already built
+	s.dictMu.RLock()
+	if path, ok := s.novelDict[novelID]; ok {
+		s.dictMu.RUnlock()
+		return path
+	}
+	s.dictMu.RUnlock()
+
+	// Slow path: build and cache
+	s.dictMu.Lock()
+	defer s.dictMu.Unlock()
+
+	// Double-check after acquiring write lock
+	if path, ok := s.novelDict[novelID]; ok {
+		return path
+	}
+
 	aliases, err := s.chapterRepo.ListAliases(novelID)
 	if err != nil || len(aliases) == 0 {
+		s.novelDict[novelID] = "" // cache empty result too
 		return ""
 	}
 
@@ -75,6 +96,7 @@ func (s *Service) buildCustomDict(novelID int64) string {
 	}
 
 	if len(terms) == 0 {
+		s.novelDict[novelID] = ""
 		return ""
 	}
 
@@ -84,7 +106,7 @@ func (s *Service) buildCustomDict(novelID int64) string {
 	for term := range terms {
 		term = strings.TrimSpace(term)
 		if len([]rune(term)) < 2 {
-			continue // skip single-char
+			continue
 		}
 		sb.WriteString(fmt.Sprintf("%s 100 n\n", term))
 	}
@@ -95,22 +117,35 @@ func (s *Service) buildCustomDict(novelID int64) string {
 	path := filepath.Join(dir, fmt.Sprintf("novel_%d.txt", novelID))
 	os.WriteFile(path, []byte(sb.String()), 0644)
 
-	s.dictMu.Lock()
 	s.novelDict[novelID] = path
-	s.dictMu.Unlock()
-
 	return path
 }
 
-// loadCustomDict loads a custom dictionary into the segmenter for a specific novel.
-func (s *Service) loadCustomDict(path string) *gse.Segmenter {
-	// Create a fresh segmenter with custom dict
-	seg := new(gse.Segmenter)
-	if path != "" {
-		seg.LoadDict(path) // custom dict
-	} else {
-		seg.LoadDict() // default only
+// getNovelSegmenter returns a cached segmenter for the given novel, creating one if needed.
+// Caching avoids rebuilding the jieba DAG/trie on every tokenization call.
+func (s *Service) getNovelSegmenter(novelID int64, customDictPath string) *gse.Segmenter {
+	if customDictPath == "" {
+		return s.getSegmenter()
 	}
+
+	s.dictMu.RLock()
+	seg, ok := s.novelSeg[novelID]
+	s.dictMu.RUnlock()
+	if ok {
+		return seg
+	}
+
+	s.dictMu.Lock()
+	defer s.dictMu.Unlock()
+
+	// Double-check
+	if seg, ok := s.novelSeg[novelID]; ok {
+		return seg
+	}
+
+	seg = new(gse.Segmenter)
+	seg.LoadDict(customDictPath)
+	s.novelSeg[novelID] = seg
 	return seg
 }
 
@@ -118,17 +153,12 @@ func (s *Service) loadCustomDict(path string) *gse.Segmenter {
 
 // tokenizeText tokenizes text using jieba + custom dict + bigram fallback.
 // Returns space-separated tokens for tsvector indexing.
-func (s *Service) tokenizeText(text string, customDictPath string) string {
+func (s *Service) tokenizeText(text string, novelID int64) string {
 	if text == "" {
 		return ""
 	}
 
-	var seg *gse.Segmenter
-	if customDictPath != "" {
-		seg = s.loadCustomDict(customDictPath)
-	} else {
-		seg = s.getSegmenter()
-	}
+	seg := s.getNovelSegmenter(novelID, s.getNovelDict(novelID))
 
 	// Step 1: Jieba tokenization
 	jiebaTokens := seg.Cut(text, true) // use HMM
@@ -164,17 +194,12 @@ func (s *Service) tokenizeText(text string, customDictPath string) string {
 
 // tokenizeForQuery tokenizes a search query for tsquery.
 // Uses jieba tokens only (no bigram fallback needed — query terms should be precise).
-func (s *Service) tokenizeForQuery(query string, customDictPath string) string {
+func (s *Service) tokenizeForQuery(query string, novelID int64) string {
 	if query == "" {
 		return ""
 	}
 
-	var seg *gse.Segmenter
-	if customDictPath != "" {
-		seg = s.loadCustomDict(customDictPath)
-	} else {
-		seg = s.getSegmenter()
-	}
+	seg := s.getNovelSegmenter(novelID, s.getNovelDict(novelID))
 
 	tokens := seg.Cut(query, true)
 
@@ -232,18 +257,18 @@ func extractBigrams(text string) []string {
 
 // BuildSearchText generates tokenized search text from a chapter's data.
 func (s *Service) BuildSearchText(novelID int64, chapterTitle, summary string, characters []model.CharacterInfo, events []model.EventInfo) string {
-	customDict := s.buildCustomDict(novelID)
+	s.buildCustomDict(novelID) // ensure dict file is built (idempotent)
 
 	var parts []string
 
 	// Chapter title
 	if chapterTitle != "" {
-		parts = append(parts, s.tokenizeText(chapterTitle, customDict))
+		parts = append(parts, s.tokenizeText(chapterTitle, novelID))
 	}
 
 	// Summary
 	if summary != "" {
-		parts = append(parts, s.tokenizeText(summary, customDict))
+		parts = append(parts, s.tokenizeText(summary, novelID))
 	}
 
 	// Character names + aliases (preserved as whole words — added AFTER tokenization)
@@ -303,6 +328,10 @@ func (s *Service) UpsertChapterAliases(novelID int64, characters []model.Charact
 
 // RefreshDictForNovel rebuilds the custom jieba dictionary for a novel after incremental updates.
 func (s *Service) RefreshDictForNovel(novelID int64) {
+	s.dictMu.Lock()
+	delete(s.novelDict, novelID)  // force rebuild
+	delete(s.novelSeg, novelID)   // invalidate cached segmenter
+	s.dictMu.Unlock()
 	s.buildCustomDict(novelID)
 }
 
@@ -387,7 +416,9 @@ func (s *Service) HybridSearch(ctx context.Context, query string, novelID int64,
 	// 1a. Expand query with entity embedding semantic match (new)
 	if s.entitySvc != nil {
 		entities, err := s.entitySvc.SearchEntities(ctx, query, novelID, 3)
-		if err == nil && len(entities) > 0 {
+		if err != nil {
+			log.Printf("[search] entity expansion warning: %v", err)
+		} else if len(entities) > 0 {
 			// Append matched entity names to the query for broader recall
 			query = query + " " + strings.Join(entities, " ")
 		}
@@ -397,8 +428,7 @@ func (s *Service) HybridSearch(ctx context.Context, query string, novelID int64,
 	expandedQuery := s.expandWithAliases(query, novelID)
 
 	// 2. Tokenize query for full-text search (jieba + custom dict)
-	customDict := s.getNovelDict(novelID)
-	tsQuery := s.tokenizeForQuery(expandedQuery, customDict)
+	tsQuery := s.tokenizeForQuery(expandedQuery, novelID)
 
 	// 3. Try to generate query embedding; fall back to full-text if unavailable
 	vecs, err := s.embedder.EmbedStrings(ctx, []string{expandedQuery})
@@ -524,8 +554,6 @@ func isCJK(r rune) bool {
 		(r >= 0x3400 && r <= 0x4DBF) ||
 		(r >= 0xF900 && r <= 0xFAFF)
 }
-
-var _ = utf8.RuneCountInString
 
 // ---- Tool factory for ADK agents ----
 
