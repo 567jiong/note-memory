@@ -103,18 +103,13 @@ func (w *GraphWriter) syncCharacter(ctx context.Context, s neo4j.Session, novelI
 
 	// Sync realm breakthrough (uses LLM-extracted realm from CharacterInfo)
 	if char.Realm != "" {
-		level := char.RealmLevel
-		if level == 0 {
-			level = realmLevel(char.Realm) // fallback: try to infer level from realm name
-		}
-		w.syncRealmBreakthrough(ctx, s, novelID, char.Name, chapterNum, char.Realm, level, extractAge(char.Status))
+		w.syncRealmBreakthrough(ctx, s, novelID, char.Name, chapterNum, char.Realm, extractAge(char.Status))
 	}
 }
 
-func (w *GraphWriter) syncRealmBreakthrough(ctx context.Context, s neo4j.Session, novelID int64, charName string, chapterNum int, realm string, level int, age int) {
+func (w *GraphWriter) syncRealmBreakthrough(ctx context.Context, s neo4j.Session, novelID int64, charName string, chapterNum int, realm string, age int) {
 	s.Run(ctx, `
 		MERGE (r:Realm {novel_id: $novelId, name: $realm})
-		  ON CREATE SET r.level = $level
 		WITH r
 		MATCH (c:Character {novel_id: $novelId, name: $name})
 		MERGE (c)-[b:BREAKTHROUGH_TO {at_chapter: $chapterNum}]->(r)
@@ -122,7 +117,6 @@ func (w *GraphWriter) syncRealmBreakthrough(ctx context.Context, s neo4j.Session
 	`, map[string]any{
 		"novelId":   novelID,
 		"realm":     realm,
-		"level":     level,
 		"name":      charName,
 		"chapterNum": chapterNum,
 		"age":       age,
@@ -163,43 +157,6 @@ func (w *GraphWriter) syncEvent(ctx context.Context, s neo4j.Session, novelID in
 }
 
 // ---- Detection helpers ----
-
-// realmLevel maps a realm name to its numeric level.
-// Used as a fallback when LLM doesn't provide realm_level.
-func realmLevel(realm string) int {
-	switch realm {
-	case "练气期":
-		return 1
-	case "筑基期":
-		return 2
-	case "金丹期":
-		return 3
-	case "元婴期":
-		return 4
-	case "化神期":
-		return 5
-	case "炼虚期":
-		return 6
-	case "合体期":
-		return 7
-	case "大乘期":
-		return 8
-	case "渡劫期":
-		return 9
-	case "真仙境":
-		return 10
-	case "金仙境":
-		return 11
-	case "太乙境":
-		return 12
-	case "大罗境":
-		return 13
-	case "道祖境":
-		return 14
-	default:
-		return 0
-	}
-}
 
 var agePattern = regexp.MustCompile(`(\d+)\s*岁`)
 

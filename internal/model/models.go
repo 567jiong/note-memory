@@ -131,8 +131,7 @@ type CharacterInfo struct {
 	Name            string   `json:"name"`
 	Aliases         []string `json:"aliases,omitempty"`
 	Status          string   `json:"status,omitempty"`
-	Realm           string   `json:"realm,omitempty"`            // LLM-extracted realm name (e.g. "筑基期")
-	RealmLevel      int      `json:"realm_level,omitempty"`      // LLM-inferred numeric level
+	Realm           string   `json:"realm,omitempty"` // LLM-extracted realm name (e.g. "筑基期")
 	FirstAppearance int      `json:"first_appearance,omitempty"`
 }
 

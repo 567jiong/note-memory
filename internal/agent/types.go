@@ -21,9 +21,9 @@ type QueryTimelineInput struct {
 }
 
 // TimelineEntry is a single realm breakthrough entry.
+// Ordered by chapter number (natural progression), no hardcoded level needed.
 type TimelineEntry struct {
 	Realm   string `json:"realm"`
-	Level   int    `json:"level"`
 	Chapter int    `json:"chapter"`
 	Age     int    `json:"age,omitempty"`
 }

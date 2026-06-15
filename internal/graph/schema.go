@@ -25,7 +25,6 @@ func InitSchema(ctx context.Context, d *Driver) error {
 		`CREATE INDEX character_name IF NOT EXISTS FOR (c:Character) ON (c.name)`,
 		`CREATE INDEX character_type IF NOT EXISTS FOR (c:Character) ON (c.type)`,
 		`CREATE INDEX chapter_number IF NOT EXISTS FOR (c:Chapter) ON (c.chapter_number)`,
-		`CREATE INDEX realm_level IF NOT EXISTS FOR (r:Realm) ON (r.level)`,
 	}
 
 	s := d.Session(ctx)

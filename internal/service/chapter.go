@@ -87,9 +87,8 @@ func (s *ChapterService) summarizeChapter(ctx context.Context, ch *model.Chapter
    - aliases: 别名数组
    - status: 本章中的状态或变化
    - realm: 当前修炼境界名称（如"筑基期""元婴期"，根据文中描述推断，没有则为空字符串）
-   - realm_level: 境界等级数字（练气=1, 筑基=2, 金丹=3, 元婴=4, 化神=5, 炼虚=6, 合体=7, 大乘=8, 渡劫=9, 真仙=10, 金仙=11, 太乙=12, 大罗=13, 道祖=14。非修仙小说则填0）
    - first_appearance: 章节号
-   格式：[{"name":"人物名","aliases":["别名"],"status":"状态","realm":"境界名","realm_level":数字,"first_appearance":章节号}]
+   格式：[{"name":"人物名","aliases":["别名"],"status":"状态","realm":"境界名","first_appearance":章节号}]
 3. 提取本章的关键事件，以 JSON 数组格式返回：
    [{"title":"事件名","participants":["人物名"],"summary":"事件简述","impact":"影响","chapter_num":章节号}]
 

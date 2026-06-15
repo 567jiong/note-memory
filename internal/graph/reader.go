@@ -23,10 +23,9 @@ func (r *GraphReader) IsEnabled() bool {
 
 // RealmTimeline returns a character's realm breakthrough timeline.
 type RealmEntry struct {
-	Realm     string
-	Level     int
-	Chapter   int
-	Age       int
+	Realm   string
+	Chapter int
+	Age     int
 }
 
 func (r *GraphReader) RealmTimeline(ctx context.Context, novelID int64, charName string, maxChapter int) ([]RealmEntry, error) {
@@ -44,7 +43,7 @@ func (r *GraphReader) RealmTimeline(ctx context.Context, novelID int64, charName
 		MATCH (c:Character {novel_id: $novelId, name: $name})
 		      -[b:BREAKTHROUGH_TO]->(r:Realm)
 		WHERE b.at_chapter <= $maxChapter
-		RETURN r.name AS realm, r.level AS level, b.at_chapter AS chapter, b.age AS age
+		RETURN r.name AS realm, b.at_chapter AS chapter, b.age AS age
 		ORDER BY b.at_chapter
 	`, map[string]any{
 		"novelId":    novelID,
@@ -59,13 +58,11 @@ func (r *GraphReader) RealmTimeline(ctx context.Context, novelID int64, charName
 	for result.Next(ctx) {
 		record := result.Record()
 		realm, _ := record.Get("realm")
-		level, _ := record.Get("level")
 		chapter, _ := record.Get("chapter")
 		age, _ := record.Get("age")
 
 		entries = append(entries, RealmEntry{
 			Realm:   toString(realm),
-			Level:   toInt(level),
 			Chapter: toInt(chapter),
 			Age:     toInt(age),
 		})
