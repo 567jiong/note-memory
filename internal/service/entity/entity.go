@@ -3,6 +3,7 @@ package entity
 import (
 	"context"
 	"fmt"
+	"encoding/json"
 	"log"
 	"note-memory/internal/model"
 	"note-memory/internal/repository"
@@ -124,4 +125,25 @@ func (s *Service) SearchEntities(ctx context.Context, query string, novelID int6
 		names = append(names, r.EntityName)
 	}
 	return names, nil
+}
+
+// ---- Tool factory for ADK agents ----
+
+// EntityTool returns a closure matching tools.Deps.EntityFunc that delegates to SearchEntities.
+// Safe to call on nil receiver (returns empty results).
+func (s *Service) EntityTool() func(ctx context.Context, query string, novelID int64, topK int) (string, error) {
+	return func(ctx context.Context, query string, novelID int64, topK int) (string, error) {
+		if s == nil {
+			return `{"matched_names":[]}`, nil
+		}
+		names, err := s.SearchEntities(ctx, query, novelID, topK)
+		if err != nil {
+			return "", err
+		}
+		type out struct {
+			Names []string `json:"matched_names"`
+		}
+		b, _ := json.Marshal(out{Names: names})
+		return string(b), nil
+	}
 }

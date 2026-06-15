@@ -2,7 +2,10 @@ package graph
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+
+	"note-memory/internal/service/tools"
 )
 
 // GraphReader executes knowledge graph queries with spoiler-free filtering.
@@ -129,6 +132,46 @@ func (r *GraphReader) CharacterRelations(ctx context.Context, novelID int64, cha
 		})
 	}
 	return entries, result.Err()
+}
+
+// ---- Tool factories for ADK agents ----
+
+// TimelineTool returns a closure matching tools.Deps.TimelineFunc.
+func (r *GraphReader) TimelineTool() func(ctx context.Context, novelID int64, charName string, maxChapter int) (string, error) {
+	return func(ctx context.Context, novelID int64, charName string, maxChapter int) (string, error) {
+		if r == nil || !r.IsEnabled() {
+			return `[]`, nil
+		}
+		entries, err := r.RealmTimeline(ctx, novelID, charName, maxChapter)
+		if err != nil {
+			return "", err
+		}
+		var out []tools.TimelineEntry
+		for _, e := range entries {
+			out = append(out, tools.TimelineEntry{Realm: e.Realm, Chapter: e.Chapter, Age: e.Age})
+		}
+		b, _ := json.Marshal(out)
+		return string(b), nil
+	}
+}
+
+// RelationsTool returns a closure matching tools.Deps.RelationsFunc.
+func (r *GraphReader) RelationsTool() func(ctx context.Context, novelID int64, charName string, maxChapter int) (string, error) {
+	return func(ctx context.Context, novelID int64, charName string, maxChapter int) (string, error) {
+		if r == nil || !r.IsEnabled() {
+			return `[]`, nil
+		}
+		entries, err := r.CharacterRelations(ctx, novelID, charName, maxChapter)
+		if err != nil {
+			return "", err
+		}
+		var out []tools.RelationEntry
+		for _, e := range entries {
+			out = append(out, tools.RelationEntry{From: e.FromName, To: e.ToName, RelType: e.RelationType, Since: e.SinceChapter, Ended: e.EndedChapter})
+		}
+		b, _ := json.Marshal(out)
+		return string(b), nil
+	}
 }
 
 // ---- Type helpers ----

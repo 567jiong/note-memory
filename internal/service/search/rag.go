@@ -2,7 +2,6 @@ package search
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"note-memory/internal/model"
 	"note-memory/internal/repository"
@@ -173,44 +172,10 @@ func (s *RAGService) AgenticRetrieve(ctx context.Context, query string, novelID 
 	agent, err := newAgenticRAGAgent(ctx, s.chatModel, tools.Deps{
 		NovelID:    novelID,
 		MaxChapter: maxChapter,
-
-		SearchFunc: func(ctx context.Context, q string, nid int64, maxCh, topK int) (string, error) {
-			results, err := s.searchSvc.HybridSearch(ctx, q, nid, maxCh, topK)
-			if err != nil {
-				sr, err2 := s.Search(ctx, q, nid, maxCh, topK)
-				if err2 != nil {
-					return "", fmt.Errorf("agentic search failed (hybrid: %v, semantic: %v)", err, err2)
-				}
-				results = convertSearchResults(sr)
-			}
-			var out []tools.ChapterResult
-			for _, r := range results {
-				out = append(out, tools.ChapterResult{
-					ChapterNum: r.Chapter.ChapterNumber,
-					Score:      r.FinalScore,
-					Summary:    r.Chapter.Summary,
-				})
-			}
-			b, _ := json.Marshal(out)
-			return string(b), nil
-		},
-
-		EntityFunc: func(ctx context.Context, q string, nid int64, topK int) (string, error) {
-			if s.entitySvc == nil {
-				return `{"matched_names":[]}`, nil
-			}
-			names, err := s.entitySvc.SearchEntities(ctx, q, nid, topK)
-			if err != nil {
-				return "", err
-			}
-			type out struct {
-				Names []string `json:"matched_names"`
-			}
-			b, _ := json.Marshal(out{Names: names})
-			return string(b), nil
-		},
-		// TimelineFunc and RelationsFunc remain nil — Neo4j not wired into RAGService yet.
-		// The tools will gracefully return [] when not available.
+		SearchFunc: s.searchSvc.SearchTool(),
+		EntityFunc: s.entitySvc.EntityTool(),
+		// TimelineFunc / RelationsFunc remain nil — Neo4j not wired into RAGService yet.
+		// The tools gracefully return [] when not available.
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create agentic rag agent: %w", err)

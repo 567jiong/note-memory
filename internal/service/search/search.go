@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"note-memory/internal/model"
 	"note-memory/internal/repository"
+	"encoding/json"
 	"note-memory/internal/service/entity"
+	"note-memory/internal/service/tools"
 	"os"
 	"path/filepath"
 	"sort"
@@ -274,7 +276,7 @@ func (s *Service) UpsertChapterAliases(novelID int64, characters []model.Charact
 	}
 	var entries []model.EntityAlias
 	for _, c := range characters {
-		if c.Name == "" || isNoisyEntity(c.Name) {
+		if c.Name == "" {
 			continue
 		}
 		entries = append(entries, model.EntityAlias{
@@ -283,7 +285,7 @@ func (s *Service) UpsertChapterAliases(novelID int64, characters []model.Charact
 			Alias:         c.Name,
 		})
 		for _, a := range c.Aliases {
-			if a == "" || isNoisyEntity(a) {
+			if a == "" {
 				continue
 			}
 			entries = append(entries, model.EntityAlias{
@@ -321,13 +323,13 @@ func (s *Service) RebuildAliasIndex(novelID int64) error {
 	for _, ch := range chapters {
 		chars, _ := model.UnmarshalCharacters(ch.Characters)
 		for _, c := range chars {
-			if c.Name == "" || isNoisyEntity(c.Name) {
+			if c.Name == "" {
 				continue
 			}
 			existing := aliasMap[c.Name]
 			existing.Name = c.Name
 			for _, a := range c.Aliases {
-				if isNoisyEntity(a) {
+				if a == "" {
 						continue
 					}
 				found := false
@@ -516,58 +518,6 @@ func (s *Service) expandWithAliases(query string, novelID int64) string {
 	return expanded
 }
 
-// ---- Entity Noise Filter ----
-
-// noiseTerms lists common relationship/role terms that are never real character names.
-var noiseTerms = map[string]bool{
-	"师兄": true, "师弟": true, "师姐": true, "师妹": true,
-	"师叔": true, "师伯": true, "师父": true, "师尊": true, "师娘": true,
-	"前辈": true, "道友": true,
-	"主人": true, "小姐": true, "少爷": true, "夫人": true, "老爷": true,
-	"老头": true, "老者": true, "大汉": true, "妇人": true, "少妇": true,
-	"那人": true, "此人": true, "来人": true,
-}
-
-// noiseSuffixes are generic role suffixes: if a name ends with one of these
-// AND the stem is short (≤2 runes), it's likely a descriptor, not a name.
-var noiseSuffixes = map[string]bool{
-	"修士": true, "男子": true, "女子": true, "少年": true, "少女": true,
-	"老者": true, "大汉": true, "妇人": true, "弟子": true, "门人": true,
-	"前辈": true, "魔修": true, "散修": true, "真人": true,
-	"书生": true, "儒生": true, "道人": true,
-}
-
-// isNoisyEntity returns true if the name is a descriptive phrase
-// (e.g. "黄脸修士", "中年儒生", "师兄") rather than a real character name.
-func isNoisyEntity(name string) bool {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return true
-	}
-
-	// Exact blacklist match
-	if noiseTerms[name] {
-		return true
-	}
-
-	// If the whole name is a noise suffix, it's just a generic role reference
-	if noiseSuffixes[name] {
-		return true
-	}
-
-	// Suffix pattern: "XX修士", "XX男子" etc. where XX is ≤2 runes = descriptor
-	for suffix := range noiseSuffixes {
-		if strings.HasSuffix(name, suffix) && name != suffix {
-			stem := strings.TrimSuffix(name, suffix)
-			if len([]rune(stem)) <= 2 {
-				return true
-			}
-		}
-	}
-
-	return false
-}
-
 // isCJK checks if a rune is CJK.
 func isCJK(r rune) bool {
 	return (r >= 0x4E00 && r <= 0x9FFF) ||
@@ -576,3 +526,29 @@ func isCJK(r rune) bool {
 }
 
 var _ = utf8.RuneCountInString
+
+// ---- Tool factory for ADK agents ----
+
+// SearchTool returns a closure matching tools.Deps.SearchFunc that delegates to HybridSearch.
+// The returned function formats results as []tools.ChapterResult JSON.
+func (s *Service) SearchTool() func(ctx context.Context, query string, novelID int64, maxChapter int, topK int) (string, error) {
+	return func(ctx context.Context, query string, novelID int64, maxChapter int, topK int) (string, error) {
+		results, err := s.HybridSearch(ctx, query, novelID, maxChapter, topK)
+		if err != nil {
+			return "", err
+		}
+		var out []tools.ChapterResult
+		for _, r := range results {
+			if len(out) >= topK {
+				break
+			}
+			out = append(out, tools.ChapterResult{
+				ChapterNum: r.Chapter.ChapterNumber,
+				Score:      r.FinalScore,
+				Summary:    r.Chapter.Summary,
+			})
+		}
+		b, _ := json.Marshal(out)
+		return string(b), nil
+	}
+}

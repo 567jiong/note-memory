@@ -2,7 +2,6 @@ package qa
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"note-memory/internal/graph"
 	"note-memory/internal/model"
@@ -64,76 +63,12 @@ func (s *Service) AskQuestion(ctx context.Context, novelID int64, question strin
 	readingAgent, err := newReadingAgent(ctx, readingAgentConfig{
 		ChatModel: s.chatModel,
 		ToolDeps: tools.Deps{
-			NovelID:    novelID,
-			MaxChapter: maxChapter,
-
-			SearchFunc: func(ctx context.Context, query string, nid int64, maxCh, topK int) (string, error) {
-				results, err := s.searchSvc.HybridSearch(ctx, query, nid, maxCh, topK)
-				if err != nil {
-					return "", err
-				}
-				type r struct {
-					ChapterNum int     `json:"chapter_num"`
-					Score      float64 `json:"score"`
-					Summary    string  `json:"summary"`
-				}
-				var out []r
-				for _, item := range results {
-					if len(out) >= topK {
-						break
-					}
-					out = append(out, r{ChapterNum: item.Chapter.ChapterNumber, Score: item.FinalScore, Summary: item.Chapter.Summary})
-				}
-				b, _ := json.Marshal(out)
-				return string(b), nil
-			},
-
-			TimelineFunc: func(ctx context.Context, nid int64, name string, maxCh int) (string, error) {
-				if s.graphReader == nil || !s.graphReader.IsEnabled() {
-					return `[]`, nil
-				}
-				entries, err := s.graphReader.RealmTimeline(ctx, nid, name, maxCh)
-				if err != nil {
-					return "", err
-				}
-				var out []tools.TimelineEntry
-				for _, e := range entries {
-					out = append(out, tools.TimelineEntry{Realm: e.Realm, Chapter: e.Chapter, Age: e.Age})
-				}
-				b, _ := json.Marshal(out)
-				return string(b), nil
-			},
-
-			RelationsFunc: func(ctx context.Context, nid int64, name string, maxCh int) (string, error) {
-				if s.graphReader == nil || !s.graphReader.IsEnabled() {
-					return `[]`, nil
-				}
-				entries, err := s.graphReader.CharacterRelations(ctx, nid, name, maxCh)
-				if err != nil {
-					return "", err
-				}
-				var out []tools.RelationEntry
-				for _, e := range entries {
-					out = append(out, tools.RelationEntry{From: e.FromName, To: e.ToName, RelType: e.RelationType, Since: e.SinceChapter, Ended: e.EndedChapter})
-				}
-				b, _ := json.Marshal(out)
-				return string(b), nil
-			},
-
-			EntityFunc: func(ctx context.Context, query string, nid int64, topK int) (string, error) {
-				if s.entitySvc == nil {
-					return `{"matched_names":[]}`, nil
-				}
-				names, err := s.entitySvc.SearchEntities(ctx, query, nid, topK)
-				if err != nil {
-					return "", err
-				}
-				type out struct {
-					Names []string `json:"matched_names"`
-				}
-				b, _ := json.Marshal(out{Names: names})
-				return string(b), nil
-			},
+			NovelID:       novelID,
+			MaxChapter:    maxChapter,
+			SearchFunc:    s.searchSvc.SearchTool(),
+			TimelineFunc:  s.graphReader.TimelineTool(),
+			RelationsFunc: s.graphReader.RelationsTool(),
+			EntityFunc:    s.entitySvc.EntityTool(),
 		},
 	})
 	if err != nil {
