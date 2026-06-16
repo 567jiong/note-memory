@@ -61,3 +61,22 @@ type ChapterSummary struct {
 	Characters []string `json:"characters"`
 	Events     []string `json:"events"`
 }
+
+// QueryTechniquesInput is the input for the query_techniques tool.
+type QueryTechniquesInput struct {
+	CharacterName string `json:"character_name" jsonschema_description:"要查询的人物规范名称"`
+}
+
+// TechniqueEntry is a single technique acquisition record returned to the LLM.
+type TechniqueEntry struct {
+	Technique   string `json:"technique"`
+	Level       string `json:"level,omitempty"`
+	Action      string `json:"action"`
+	Chapter     int    `json:"chapter"`
+	Description string `json:"description,omitempty"`
+}
+
+// QueryAllTechniquesInput is the input for the query_all_techniques tool.
+type QueryAllTechniquesInput struct {
+	// No character filter — returns all techniques known up to the reading progress.
+}

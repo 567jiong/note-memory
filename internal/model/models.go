@@ -31,6 +31,8 @@ type Chapter struct {
 	Summary       string    `json:"summary" gorm:"type:text;default:''"`
 	Characters    JSONB            `json:"characters" gorm:"type:jsonb;default:'[]'"`
 	Events        JSONB            `json:"events" gorm:"type:jsonb;default:'[]'"`
+	Relations     JSONB            `json:"relations" gorm:"type:jsonb;default:'[]'"`
+	Techniques    JSONB            `json:"techniques" gorm:"type:jsonb;default:'[]'"`
 	Embedding     *pgvector.Vector `json:"-" gorm:"type:vector(1024)"`
 	CreatedAt     time.Time        `json:"created_at"`
 }
@@ -114,8 +116,9 @@ type HybridSearchResult struct {
 type CharacterInfo struct {
 	Name            string   `json:"name"`
 	Aliases         []string `json:"aliases,omitempty"`
+	Type            string   `json:"type,omitempty"`  // AI-classified role: 主角/重要配角/配角/反派/路人
 	Status          string   `json:"status,omitempty"`
-	Realm           string   `json:"realm,omitempty"` // LLM-extracted realm name (e.g. "筑基期")
+	Realm           string   `json:"realm,omitempty"`  // LLM-extracted realm name (e.g. "筑基期")
 	FirstAppearance int      `json:"first_appearance,omitempty"`
 }
 
@@ -125,6 +128,27 @@ type EventInfo struct {
 	Summary      string   `json:"summary,omitempty"`
 	Impact       string   `json:"impact,omitempty"`
 	ChapterNum   int      `json:"chapter_num,omitempty"`
+}
+
+// CharacterRelation describes a relationship between two characters extracted from a chapter.
+type CharacterRelation struct {
+	FromName     string `json:"from_name"`
+	ToName       string `json:"to_name"`
+	RelationType string `json:"relation_type"`      // MASTER_OF, FRIEND_OF, ENEMY_OF, LOVE_INTEREST, BELONGS_TO
+	SinceChapter int    `json:"since_chapter"`
+	EndedChapter int    `json:"ended_chapter,omitempty"` // 0 = ongoing
+	TriggerEvent string `json:"trigger_event,omitempty"` // Event title that caused this relationship
+	Description  string `json:"description,omitempty"`   // Brief context
+}
+
+// TechniqueInfo describes a cultivation technique extracted from a chapter.
+type TechniqueInfo struct {
+	Name        string `json:"name"`                  // e.g. "青元剑诀"
+	Level       string `json:"level,omitempty"`       // e.g. "第一层", "第九层"
+	Practitioner string `json:"practitioner"`         // Character who learns/uses it
+	Action      string `json:"action"`                // "习得", "突破", "施展"
+	ChapterNum  int    `json:"chapter_num"`
+	Description string `json:"description,omitempty"` // Brief context
 }
 
 // --- JSONB type for GORM ---
@@ -192,4 +216,46 @@ func UnmarshalEvents(j JSONB) ([]EventInfo, error) {
 		return nil, err
 	}
 	return events, nil
+}
+
+// MarshalRelations serializes a slice of CharacterRelation to JSONB.
+func MarshalRelations(relations []CharacterRelation) (JSONB, error) {
+	b, err := json.Marshal(relations)
+	if err != nil {
+		return nil, err
+	}
+	return JSONB(b), nil
+}
+
+// UnmarshalRelations deserializes JSONB to a slice of CharacterRelation.
+func UnmarshalRelations(j JSONB) ([]CharacterRelation, error) {
+	if len(j) == 0 {
+		return []CharacterRelation{}, nil
+	}
+	var relations []CharacterRelation
+	if err := json.Unmarshal(j, &relations); err != nil {
+		return nil, err
+	}
+	return relations, nil
+}
+
+// MarshalTechniques serializes a slice of TechniqueInfo to JSONB.
+func MarshalTechniques(techniques []TechniqueInfo) (JSONB, error) {
+	b, err := json.Marshal(techniques)
+	if err != nil {
+		return nil, err
+	}
+	return JSONB(b), nil
+}
+
+// UnmarshalTechniques deserializes JSONB to a slice of TechniqueInfo.
+func UnmarshalTechniques(j JSONB) ([]TechniqueInfo, error) {
+	if len(j) == 0 {
+		return []TechniqueInfo{}, nil
+	}
+	var techniques []TechniqueInfo
+	if err := json.Unmarshal(j, &techniques); err != nil {
+		return nil, err
+	}
+	return techniques, nil
 }

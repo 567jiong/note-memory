@@ -159,6 +159,11 @@ func (s *Service) FillEmbeddings(novelID int64) {
 	go s.chapterSvc.FillChunkEmbeddings(context.Background(), novelID)
 }
 
+// ResyncGraph re-syncs all processed chapters to Neo4j using existing extracted data.
+func (s *Service) ResyncGraph(novelID int64) error {
+	return s.chapterSvc.ResyncGraph(context.Background(), novelID)
+}
+
 // detectAndDecode auto-detects GBK/GB18030 encoding and converts to UTF-8.
 func detectAndDecode(data []byte) string {
 	if utf8Valid(data) {

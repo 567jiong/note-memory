@@ -75,11 +75,13 @@ func (r *ChapterRepo) ListChaptersInRange(novelID int64, start, end, maxChapter 
 }
 
 // UpdateSummary updates the summary and extracted info for a chapter.
-func (r *ChapterRepo) UpdateSummary(chapterID int64, summary string, characters model.JSONB, events model.JSONB) error {
+func (r *ChapterRepo) UpdateSummary(chapterID int64, summary string, characters model.JSONB, events model.JSONB, relations model.JSONB, techniques model.JSONB) error {
 	return r.db.Model(&model.Chapter{}).Where("id = ?", chapterID).Updates(map[string]interface{}{
 		"summary":    summary,
 		"characters": characters,
 		"events":     events,
+		"relations":  relations,
+		"techniques": techniques,
 	}).Error
 }
 
@@ -88,6 +90,14 @@ func (r *ChapterRepo) CountByNovel(novelID int64) (int64, error) {
 	var count int64
 	err := r.db.Model(&model.Chapter{}).Where("novel_id = ?", novelID).Count(&count).Error
 	return count, err
+}
+
+// ListAll returns all chapters for a novel, ordered by chapter number.
+func (r *ChapterRepo) ListAll(novelID int64) ([]model.Chapter, error) {
+	var chapters []model.Chapter
+	err := r.db.Where("novel_id = ?", novelID).
+		Order("chapter_number ASC").Find(&chapters).Error
+	return chapters, err
 }
 
 // ListUnprocessed returns chapters that haven't been summarized yet.

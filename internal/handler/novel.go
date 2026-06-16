@@ -204,6 +204,22 @@ func (h *NovelHandler) AskQuestion(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"question": req.Question, "answer": answer})
 }
 
+// ResyncGraph re-syncs existing chapter data to Neo4j without re-running AI.
+func (h *NovelHandler) ResyncGraph(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的小说 ID"})
+		return
+	}
+
+	if err := h.novelSvc.ResyncGraph(id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "图谱重同步失败: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "知识图谱重同步完成"})
+}
+
 // Search performs hybrid semantic + full-text search on chapters.
 func (h *NovelHandler) Search(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)

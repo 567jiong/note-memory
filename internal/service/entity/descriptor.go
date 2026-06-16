@@ -37,14 +37,15 @@ func newDescriptorAgent(ctx context.Context, model einomodel.ToolCallingChatMode
 }
 
 // runDescriptor runs the descriptor agent to generate a rich text description for a character.
-func runDescriptor(ctx context.Context, agent adk.Agent, name string, aliases []string, status string, firstChapter int) (string, error) {
+func runDescriptor(ctx context.Context, agent adk.Agent, name string, aliases []string, status string, charType string, firstChapter int) (string, error) {
 	runner := adk.NewRunner(ctx, adk.RunnerConfig{Agent: agent})
 
 	userPrompt := fmt.Sprintf(`人物名称：%s
 别名列表：%s
+角色类型：%s
 当前状态：%s
 首次出场章节：%d`,
-		name, strings.Join(aliases, "、"), status, firstChapter)
+		name, strings.Join(aliases, "、"), charType, status, firstChapter)
 
 	iter := runner.Run(ctx, []*schema.Message{
 		schema.UserMessage(userPrompt),

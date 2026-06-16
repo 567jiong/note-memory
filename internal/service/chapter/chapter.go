@@ -3,6 +3,7 @@ package chapter
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"note-memory/internal/graph"
 	"note-memory/internal/model"
@@ -90,18 +91,20 @@ func (s *Service) summarizeChapter(ctx context.Context, ch *model.Chapter) {
 		return
 	}
 
-	summary, charsJSON, eventsJSON := parseAIResponse(resp)
+	summary, charsParsed, eventsParsed, relationsParsed, techniquesParsed := parseAIResponse(resp)
 
-	chars, _ := model.MarshalCharacters(charsJSON)
-	events, _ := model.MarshalEvents(eventsJSON)
+	chars, _ := model.MarshalCharacters(charsParsed)
+	events, _ := model.MarshalEvents(eventsParsed)
+	relationsJSON, _ := model.MarshalRelations(relationsParsed)
+	techniquesJSON, _ := model.MarshalTechniques(techniquesParsed)
 
-	if err := s.chapterRepo.UpdateSummary(ch.ID, summary, chars, events); err != nil {
+	if err := s.chapterRepo.UpdateSummary(ch.ID, summary, chars, events, relationsJSON, techniquesJSON); err != nil {
 		log.Printf("[chapter] update summary error: %v", err)
 		return
 	}
 
 	// Update full-text search index
-	if err := s.searchSvc.UpdateSearchIndex(ch.ID, ch.NovelID, ch.Title, summary, charsJSON, eventsJSON); err != nil {
+	if err := s.searchSvc.UpdateSearchIndex(ch.ID, ch.NovelID, ch.Title, summary, charsParsed, eventsParsed); err != nil {
 		log.Printf("[chapter] search index error for chapter %d: %v", ch.ChapterNumber, err)
 	}
 
@@ -113,14 +116,14 @@ func (s *Service) summarizeChapter(ctx context.Context, ch *model.Chapter) {
 		novel, err := s.novelRepo.GetByID(ch.NovelID)
 		if err != nil {
 			log.Printf("[chapter] graph sync: get novel %d: %v", ch.NovelID, err)
-		} else if err := s.graphWriter.SyncChapter(ctx, novel, ch, charsJSON, eventsJSON); err != nil {
+		} else if err := s.graphWriter.SyncChapter(ctx, novel, ch, charsParsed, eventsParsed, relationsParsed, techniquesParsed); err != nil {
 			log.Printf("[chapter] graph sync error for chapter %d: %v", ch.ChapterNumber, err)
 		}
 	}
 
 	// Generate/update entity embeddings for semantic alias matching
 	if s.entitySvc != nil {
-		for _, c := range charsJSON {
+		for _, c := range charsParsed {
 			if err := s.entitySvc.UpsertEntityFromChapter(ctx, ch.NovelID, c); err != nil {
 				log.Printf("[chapter] entity embedding error for %s: %v", c.Name, err)
 			}
@@ -266,17 +269,64 @@ func countChunks(content string) int {
 	return (len([]rune(content)) / 300) + 1
 }
 
-// parseAIResponse extracts XML sections from the AI response.
-func parseAIResponse(resp string) (summary string, chars []model.CharacterInfo, events []model.EventInfo) {
-	summary = extractXML(resp, "summary")
-	charsJSON := extractXML(resp, "characters")
-	eventsJSON := extractXML(resp, "events")
-
-	if charsJSON != "" {
-		json.Unmarshal([]byte(charsJSON), &chars)
+// ResyncGraph re-syncs all processed chapters to Neo4j using existing extracted data.
+// This is useful after Neo4j schema changes — it re-creates relationships and
+// technique nodes without re-running AI summarization.
+func (s *Service) ResyncGraph(ctx context.Context, novelID int64) error {
+	if s.graphWriter == nil || !s.graphWriter.IsEnabled() {
+		return nil
 	}
-	if eventsJSON != "" {
-		json.Unmarshal([]byte(eventsJSON), &events)
+
+	novel, err := s.novelRepo.GetByID(novelID)
+	if err != nil {
+		return fmt.Errorf("get novel: %w", err)
+	}
+
+	chapters, err := s.chapterRepo.ListAll(novelID)
+	if err != nil {
+		return fmt.Errorf("list chapters: %w", err)
+	}
+
+	synced := 0
+	for _, ch := range chapters {
+		if ch.Summary == "" {
+			continue
+		}
+		chars, _ := model.UnmarshalCharacters(ch.Characters)
+		events, _ := model.UnmarshalEvents(ch.Events)
+		relations, _ := model.UnmarshalRelations(ch.Relations)
+		techniques, _ := model.UnmarshalTechniques(ch.Techniques)
+
+		if err := s.graphWriter.SyncChapter(ctx, novel, &ch, chars, events, relations, techniques); err != nil {
+			log.Printf("[chapter] resync error for chapter %d: %v", ch.ChapterNumber, err)
+			continue
+		}
+		synced++
+	}
+
+	log.Printf("[chapter] resync complete: %d/%d chapters synced to Neo4j", synced, len(chapters))
+	return nil
+}
+
+// parseAIResponse extracts XML sections from the AI response.
+func parseAIResponse(resp string) (summary string, chars []model.CharacterInfo, events []model.EventInfo, relations []model.CharacterRelation, techniques []model.TechniqueInfo) {
+	summary = extractXML(resp, "summary")
+	charsXML := extractXML(resp, "characters")
+	eventsXML := extractXML(resp, "events")
+	relationsXML := extractXML(resp, "relations")
+	techniquesXML := extractXML(resp, "techniques")
+
+	if charsXML != "" {
+		json.Unmarshal([]byte(charsXML), &chars)
+	}
+	if eventsXML != "" {
+		json.Unmarshal([]byte(eventsXML), &events)
+	}
+	if relationsXML != "" {
+		json.Unmarshal([]byte(relationsXML), &relations)
+	}
+	if techniquesXML != "" {
+		json.Unmarshal([]byte(techniquesXML), &techniques)
 	}
 
 	if summary == "" {

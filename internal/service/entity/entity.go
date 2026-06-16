@@ -54,7 +54,7 @@ func (s *Service) UpsertEntityFromChapter(ctx context.Context, novelID int64, ch
 	if err != nil {
 		return fmt.Errorf("create descriptor agent for %s: %w", char.Name, err)
 	}
-	description, err := runDescriptor(ctx, dsc, char.Name, allAliases, char.Status, char.FirstAppearance)
+	description, err := runDescriptor(ctx, dsc, char.Name, allAliases, char.Status, char.Type, char.FirstAppearance)
 	if err != nil {
 		return fmt.Errorf("generate description for %s: %w", char.Name, err)
 	}

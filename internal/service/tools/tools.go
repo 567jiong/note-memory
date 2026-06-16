@@ -8,7 +8,7 @@ import (
 	"github.com/cloudwego/eino/components/tool/utils"
 )
 
-// Deps provides request-scoped dependencies for the four retrieval tools.
+// Deps provides request-scoped dependencies for the retrieval tools.
 // Each Func can be nil — the corresponding tool will return empty results
 // instead of erroring, so an agent can be created with a subset of tools.
 type Deps struct {
@@ -30,11 +30,17 @@ type Deps struct {
 	// ChaptersFunc returns chapter summaries for a given range (start to end).
 	// start=0 and end=0 triggers "recent N" mode using the caller's N parameter.
 	ChaptersFunc func(ctx context.Context, novelID int64, start, end, maxChapter int) (string, error)
+
+	// TechniqueFunc queries a character's technique acquisition timeline from Neo4j.
+	TechniqueFunc func(ctx context.Context, novelID int64, charName string, maxChapter int) (string, error)
+
+	// AllTechniquesFunc queries all known techniques from Neo4j.
+	AllTechniquesFunc func(ctx context.Context, novelID int64, maxChapter int) (string, error)
 }
 
 // Build creates the full tool set for a Retrieval / Reading Memory agent.
-// Returns five tools: search_chapters, resolve_entity, query_timeline, query_relations,
-// get_chapters.
+// Returns seven tools: search_chapters, resolve_entity, query_timeline, query_relations,
+// get_chapters, query_techniques, query_all_techniques.
 func Build(deps Deps) ([]tool.BaseTool, error) {
 	searchTool, err := newSearchChaptersTool(deps)
 	if err != nil {
@@ -61,7 +67,17 @@ func Build(deps Deps) ([]tool.BaseTool, error) {
 		return nil, fmt.Errorf("create get_chapters tool: %w", err)
 	}
 
-	return []tool.BaseTool{searchTool, resolveTool, timelineTool, relationsTool, chaptersTool}, nil
+	techniquesTool, err := newQueryTechniquesTool(deps)
+	if err != nil {
+		return nil, fmt.Errorf("create query_techniques tool: %w", err)
+	}
+
+	allTechniquesTool, err := newQueryAllTechniquesTool(deps)
+	if err != nil {
+		return nil, fmt.Errorf("create query_all_techniques tool: %w", err)
+	}
+
+	return []tool.BaseTool{searchTool, resolveTool, timelineTool, relationsTool, chaptersTool, techniquesTool, allTechniquesTool}, nil
 }
 
 // --- search_chapters ---
@@ -165,6 +181,40 @@ func newQueryRelationsTool(deps Deps) (tool.InvokableTool, error) {
 				return `[]`, nil
 			}
 			return deps.RelationsFunc(ctx, deps.NovelID, input.CharacterName, deps.MaxChapter)
+		},
+	)
+}
+
+// --- query_techniques ---
+
+func newQueryTechniquesTool(deps Deps) (tool.InvokableTool, error) {
+	return utils.InferTool(
+		"query_techniques",
+		"查询人物的功法/秘术习得时间线。返回每次习得或突破的章节号。"+
+			"适合回答：'XXX修炼了什么功法''XXX的功法有哪些''无名口诀是什么'类问题。"+
+			"注意：功法（如青元剑诀、无名口诀）不同于修炼境界（如筑基期、元婴期），境界查询请用 query_timeline。需要提供规范角色名。",
+		func(ctx context.Context, input *QueryTechniquesInput) (string, error) {
+			if deps.TechniqueFunc == nil {
+				return `[]`, nil
+			}
+			return deps.TechniqueFunc(ctx, deps.NovelID, input.CharacterName, deps.MaxChapter)
+		},
+	)
+}
+
+// --- query_all_techniques ---
+
+func newQueryAllTechniquesTool(deps Deps) (tool.InvokableTool, error) {
+	return utils.InferTool(
+		"query_all_techniques",
+		"查询当前阅读进度之前所有已知的功法/秘术。返回每种功法的修炼者、层次和习得章节。"+
+			"适合回答：'这本书里有哪些厉害功法''所有剑诀有哪些''有人修炼了什么秘术'类问题。"+
+			"不需要参数。",
+		func(ctx context.Context, _ *QueryAllTechniquesInput) (string, error) {
+			if deps.AllTechniquesFunc == nil {
+				return `[]`, nil
+			}
+			return deps.AllTechniquesFunc(ctx, deps.NovelID, deps.MaxChapter)
 		},
 	)
 }

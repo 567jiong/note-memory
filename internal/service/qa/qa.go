@@ -62,13 +62,15 @@ func (s *Service) AskQuestion(ctx context.Context, novelID int64, question strin
 	readingAgent, err := newReadingAgent(ctx, readingAgentConfig{
 		ChatModel: s.chatModel,
 		ToolDeps: tools.Deps{
-			NovelID:       novelID,
-			MaxChapter:    maxChapter,
-			SearchFunc:    s.searchSvc.SearchTool(),
-			TimelineFunc:  s.graphReader.TimelineTool(),
-			RelationsFunc: s.graphReader.RelationsTool(),
-			EntityFunc:    s.entitySvc.EntityTool(),
-			ChaptersFunc:  s.searchSvc.ChaptersTool(),
+			NovelID:           novelID,
+			MaxChapter:        maxChapter,
+			SearchFunc:        s.searchSvc.SearchTool(),
+			TimelineFunc:      s.graphReader.TimelineTool(),
+			RelationsFunc:     s.graphReader.RelationsTool(),
+			EntityFunc:        s.entitySvc.EntityTool(),
+			ChaptersFunc:      s.searchSvc.ChaptersTool(),
+			TechniqueFunc:     s.graphReader.TechniqueTool(),
+			AllTechniquesFunc: s.graphReader.AllTechniquesTool(),
 		},
 	})
 	if err != nil {
