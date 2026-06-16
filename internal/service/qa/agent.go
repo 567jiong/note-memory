@@ -1,8 +1,12 @@
 package qa
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"log"
+	"strings"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/compose"
@@ -69,7 +73,21 @@ func newReadingAgent(ctx context.Context, cfg readingAgentConfig) (adk.Agent, er
 	return agent, nil
 }
 
+// prettyJSON reformats a JSON string with indentation for logging readability.
+// Returns the original string unchanged if it's not valid JSON.
+func prettyJSON(raw string) string {
+	if !json.Valid([]byte(raw)) {
+		return raw
+	}
+	var buf bytes.Buffer
+	if err := json.Indent(&buf, []byte(raw), "", "  "); err != nil {
+		return raw
+	}
+	return strings.TrimSpace(buf.String())
+}
+
 // runReadingAgent runs the agent with a user question and returns the final answer.
+// It logs the full ReAct loop: LLM reasoning, tool calls with parameters, and tool results.
 func runReadingAgent(ctx context.Context, agent adk.Agent, novelTitle string, maxChapter int, question string) (string, error) {
 	runner := adk.NewRunner(ctx, adk.RunnerConfig{Agent: agent})
 
@@ -81,25 +99,97 @@ func runReadingAgent(ctx context.Context, agent adk.Agent, novelTitle string, ma
 		schema.UserMessage(question),
 	}
 
+	log.Println("[QA] ═══════════════════════════════════════════")
+	log.Printf("[QA] 📝 用户问题: %s", question)
+	log.Printf("[QA] 📖 小说: 《%s》 | 进度: 第 %d 章", novelTitle, maxChapter)
+	log.Println("[QA] ═══════════════════════════════════════════")
+
 	iter := runner.Run(ctx, input)
 	var answer string
+	stepNum := 0
+
 	for {
 		event, ok := iter.Next()
 		if !ok {
 			break
 		}
 		if event.Err != nil {
+			log.Printf("[QA] ❌ Agent 运行错误: %v", event.Err)
 			return "", fmt.Errorf("agent run error: %w", event.Err)
 		}
+
 		msg, _, err := adk.GetMessage(event)
 		if err != nil {
+			log.Printf("[QA] ⚠️ 获取消息失败: %v", err)
 			continue
 		}
-		if msg != nil && msg.Role == schema.Assistant && msg.Content != "" {
-			answer = msg.Content
+		if msg == nil {
+			continue
+		}
+
+		switch msg.Role {
+		case schema.Assistant:
+			// --- LLM output: could be thinking with tool calls, or final answer ---
+			hasToolCalls := len(msg.ToolCalls) > 0
+			hasContent := msg.Content != ""
+			hasReasoning := msg.ReasoningContent != ""
+
+			if hasReasoning {
+				log.Printf("[QA] 🧠 [Step %d] LLM 思考过程:", stepNum)
+				log.Println("[QA] ───────────────────────────────────────────")
+				log.Printf("[QA] %s", strings.TrimSpace(msg.ReasoningContent))
+				log.Println("[QA] ───────────────────────────────────────────")
+			}
+
+			if hasToolCalls {
+				stepNum++
+				log.Printf("[QA] 🔧 [Step %d] LLM 决定调用 %d 个工具:", stepNum, len(msg.ToolCalls))
+				for i, tc := range msg.ToolCalls {
+					log.Printf("[QA]   工具 %d: %s", i+1, tc.Function.Name)
+					log.Printf("[QA]   参数 %d: %s", i+1, prettyJSON(tc.Function.Arguments))
+				}
+				log.Println("[QA] ───────────────────────────────────────────")
+			}
+
+			// The final answer: assistant content without tool calls
+			if hasContent {
+				answer = msg.Content
+				if !hasToolCalls {
+					log.Printf("[QA] 💬 [Step %d] LLM 最终回答:", stepNum+1)
+					log.Println("[QA] ───────────────────────────────────────────")
+					log.Printf("[QA] %s", strings.TrimSpace(msg.Content))
+					log.Println("[QA] ───────────────────────────────────────────")
+				}
+			}
+
+		case schema.Tool:
+			// --- Tool execution result ---
+			toolName := event.Output.MessageOutput.ToolName
+			log.Printf("[QA] ✅ 工具 [%s] 返回结果:", toolName)
+			log.Println("[QA] ───────────────────────────────────────────")
+			// Truncate very long outputs for readability
+			result := msg.Content
+			const maxResultLen = 600
+			if len(result) > maxResultLen {
+				log.Printf("[QA] %s...", result[:maxResultLen])
+				log.Printf("[QA] ... (共 %d 字符，已截断)", len(result))
+			} else {
+				log.Printf("[QA] %s", result)
+			}
+			log.Println("[QA] ───────────────────────────────────────────")
+
+		default:
+			// Log any unexpected message type for debugging
+			if msg.Content != "" {
+				log.Printf("[QA] [%s] %s", msg.Role, msg.Content)
+			}
 		}
 	}
+
+	log.Println("[QA] ═══════════════════════════════════════════")
+
 	if answer == "" {
+		log.Println("[QA] ❌ Agent 未产生任何回答")
 		return "", fmt.Errorf("agent produced no answer")
 	}
 	return answer, nil
