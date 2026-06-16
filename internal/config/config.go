@@ -11,6 +11,7 @@ type Config struct {
 	OpenAI OpenAIConfig
 	Server ServerConfig
 	Neo4j  Neo4jConfig
+	Rerank RerankConfig
 }
 
 type DBConfig struct {
@@ -47,6 +48,14 @@ type Neo4jConfig struct {
 	Password string
 }
 
+// RerankConfig holds configuration for the cross-encoder reranking API.
+// If APIKey is empty, reranking is disabled and the system falls back to RRF-only scoring.
+type RerankConfig struct {
+	APIKey  string // empty = reranker disabled
+	BaseURL string
+	Model   string
+}
+
 func Load() *Config {
 	return &Config{
 		DB: DBConfig{
@@ -71,6 +80,11 @@ func Load() *Config {
 			URI:      getEnv("NEO4J_URI", ""),
 			User:     getEnv("NEO4J_USER", "neo4j"),
 			Password: getEnv("NEO4J_PASSWORD", "password"),
+		},
+		Rerank: RerankConfig{
+			APIKey:  getEnv("RERANK_API_KEY", ""),
+			BaseURL: getEnv("RERANK_BASE_URL", "https://api.siliconflow.cn/v1"),
+			Model:   getEnv("RERANK_MODEL", "BAAI/bge-reranker-v2-m3"),
 		},
 	}
 }

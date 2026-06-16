@@ -23,17 +23,19 @@ type Service struct {
 	chapterRepo *repository.ChapterRepo
 	embedder    embedding.Embedder
 	entitySvc   *entity.Service
+	reranker    Reranker // optional cross-encoder reranker (nil = RRF-only)
 
 	// jieba segmenter (lazy init, thread-safe after first use)
 	segmenter *gse.Segmenter
 	segOnce   sync.Once
 }
 
-func NewService(chapterRepo *repository.ChapterRepo, embedder embedding.Embedder, entitySvc *entity.Service) *Service {
+func NewService(chapterRepo *repository.ChapterRepo, embedder embedding.Embedder, entitySvc *entity.Service, reranker Reranker) *Service {
 	return &Service{
 		chapterRepo: chapterRepo,
 		embedder:    embedder,
 		entitySvc:   entitySvc,
+		reranker:    reranker,
 	}
 }
 
@@ -192,9 +194,10 @@ func (s *Service) UpdateSearchIndex(chapterID int64, novelID int64, chapterTitle
 
 // ---- Hybrid Search ----
 
-// HybridSearch combines chunk-level semantic search with tsvector full-text search.
-// Weights: semantic 0.7 + full-text 0.3
-// Semantic branch searches chapter_chunks.embedding and aggregates by chapter.
+// HybridSearch combines chunk-level semantic search with tsvector full-text search
+// using Reciprocal Rank Fusion (RRF). If a cross-encoder reranker is configured,
+// the top RRF candidates are re-scored for improved relevance.
+//
 // Falls back to pure full-text search if embeddings are unavailable.
 func (s *Service) HybridSearch(ctx context.Context, query string, novelID int64, maxChapter int, topK int) ([]model.HybridSearchResult, error) {
 	if topK <= 0 {
@@ -207,7 +210,6 @@ func (s *Service) HybridSearch(ctx context.Context, query string, novelID int64,
 		if err != nil {
 			log.Printf("[search] entity expansion warning: %v", err)
 		} else if len(entities) > 0 {
-			// Append matched entity names to the query for broader recall
 			query = query + " " + strings.Join(entities, " ")
 		}
 	}
@@ -226,63 +228,109 @@ func (s *Service) HybridSearch(ctx context.Context, query string, novelID int64,
 	}
 
 	vec := pgvector.NewVector(queryVec)
+	return s.hybridSearchWithVec(ctx, query, novelID, maxChapter, topK, tsQuery, vec)
+}
 
-	// 4. Chunk-level semantic search (aggregated by chapter)
-	semChapters, semScores, semErr := s.chapterRepo.SearchChunks(novelID, maxChapter, vec, topK*2)
+// hybridSearchWithVec performs the core hybrid search using a pre-computed embedding.
+// The public HybridSearch embeds internally; this variant is used by SearchTool when
+// the query vector is already available (avoiding double-embedding).
+func (s *Service) hybridSearchWithVec(
+	ctx context.Context,
+	query string,
+	novelID int64,
+	maxChapter int,
+	topK int,
+	tsQuery string,
+	vec pgvector.Vector,
+) ([]model.HybridSearchResult, error) {
+	// Fetch topK*3 from each source for robust RRF merging (minimum 30 candidates).
+	fetchK := topK * 3
+	if fetchK < 30 {
+		fetchK = 30
+	}
+
+	// 4. Semantic search (chunk-level, aggregated by chapter)
+	semChapters, semScores, semErr := s.chapterRepo.SearchChunks(novelID, maxChapter, vec, fetchK)
 	if semErr != nil {
 		return nil, fmt.Errorf("chunk semantic search: %w", semErr)
 	}
 
 	// 5. Full-text search
-	ftResults, ftErr := s.chapterRepo.FullTextSearch(novelID, maxChapter, tsQuery, topK*2)
+	ftResults, ftErr := s.chapterRepo.FullTextSearch(novelID, maxChapter, tsQuery, fetchK)
 	if ftErr != nil {
 		return nil, fmt.Errorf("fulltext search: %w", ftErr)
 	}
 
-	// 6. Merge semantic + full-text with weighted scoring
-	return mergeHybridResults(semChapters, semScores, ftResults), nil
-}
+	// 6. RRF merge
+	rrfResults := applyRRF(semChapters, semScores, ftResults, 60)
 
-// mergeHybridResults combines semantic and full-text results with weights 0.7/0.3.
-func mergeHybridResults(semChapters []model.Chapter, semScores []float64, ftResults []model.HybridSearchResult) []model.HybridSearchResult {
-	const semWeight = 0.7
-	const textWeight = 0.3
-
-	// Build lookup: chapterID → best scores
-	type merged struct {
-		chapter   model.Chapter
-		semScore  float64
-		textScore float64
-	}
-	byID := make(map[int64]*merged)
-
-	for i, ch := range semChapters {
-		byID[ch.ID] = &merged{chapter: ch, semScore: semScores[i]}
-	}
-	for _, r := range ftResults {
-		if m, ok := byID[r.Chapter.ID]; ok {
-			m.textScore = r.FinalScore
+	// 7. Optional cross-encoder rerank (graceful degradation on failure)
+	if s.reranker != nil && len(rrfResults) > 0 {
+		reranked, err := s.rerankTopCandidates(ctx, query, novelID, vec, rrfResults, topK)
+		if err != nil {
+			log.Printf("[search] rerank failed, falling back to RRF: %v", err)
 		} else {
-			byID[r.Chapter.ID] = &merged{chapter: r.Chapter, textScore: r.FinalScore}
+			return reranked, nil
 		}
 	}
 
-	// Calculate final scores and collect
-	var results []model.HybridSearchResult
-	for _, m := range byID {
-		results = append(results, model.HybridSearchResult{
-			Chapter:    m.chapter,
-			SemScore:   m.semScore,
-			TextScore:  m.textScore,
-			FinalScore: semWeight*m.semScore + textWeight*m.textScore,
-		})
+	// RRF-only: return top-K
+	if len(rrfResults) > topK {
+		rrfResults = rrfResults[:topK]
+	}
+	return rrfResults, nil
+}
+
+// rerankTopCandidates takes the top-15 RRF results, fetches their best chunk content,
+// re-scores via the cross-encoder API, and returns the top-K reranked results.
+func (s *Service) rerankTopCandidates(
+	ctx context.Context,
+	query string,
+	novelID int64,
+	queryVec pgvector.Vector,
+	rrfResults []model.HybridSearchResult,
+	topK int,
+) ([]model.HybridSearchResult, error) {
+	candidateCount := 15
+	if len(rrfResults) < candidateCount {
+		candidateCount = len(rrfResults)
+	}
+	candidates := rrfResults[:candidateCount]
+
+	// Fetch best chunk content for each candidate
+	documents := make([]string, candidateCount)
+	for i, r := range candidates {
+		content, err := s.chapterRepo.GetBestChunkContent(novelID, r.Chapter.ID, queryVec)
+		if err != nil || content == "" {
+			// Fall back to chapter summary if chunk content is unavailable
+			documents[i] = r.Chapter.Summary
+		} else {
+			documents[i] = content
+		}
 	}
 
-	// Sort by final score descending
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].FinalScore > results[j].FinalScore
+	// Call cross-encoder
+	scores, err := s.reranker.Rerank(ctx, query, documents)
+	if err != nil {
+		return nil, fmt.Errorf("rerank call: %w", err)
+	}
+
+	// Update FinalScore with reranker relevance scores
+	for i := range candidates {
+		if i < len(scores) {
+			candidates[i].FinalScore = scores[i]
+		}
+	}
+
+	// Re-sort by new scores
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].FinalScore > candidates[j].FinalScore
 	})
-	return results
+
+	if len(candidates) > topK {
+		candidates = candidates[:topK]
+	}
+	return candidates, nil
 }
 
 // isCJK checks if a rune is CJK.
@@ -296,12 +344,35 @@ func isCJK(r rune) bool {
 
 // SearchTool returns a closure matching tools.Deps.SearchFunc that delegates to HybridSearch.
 // The returned function formats results as []tools.ChapterResult JSON.
+// Now populates the Content field with the best-matching chunk text for each chapter.
 func (s *Service) SearchTool() func(ctx context.Context, query string, novelID int64, maxChapter int, topK int) (string, error) {
 	return func(ctx context.Context, query string, novelID int64, maxChapter int, topK int) (string, error) {
-		results, err := s.HybridSearch(ctx, query, novelID, maxChapter, topK)
+		// Embed query once (reused for search + content fetching)
+		vecs, err := s.embedder.EmbedStrings(ctx, []string{query})
+		if err != nil || len(vecs) == 0 {
+			return `[]`, nil
+		}
+		queryVec := make([]float32, len(vecs[0]))
+		for i, v := range vecs[0] {
+			queryVec[i] = float32(v)
+		}
+		vec := pgvector.NewVector(queryVec)
+
+		// Tokenize for full-text
+		tsQuery := s.tokenizeForQuery(query, novelID)
+
+		results, err := s.hybridSearchWithVec(ctx, query, novelID, maxChapter, topK, tsQuery, vec)
 		if err != nil {
 			return "", err
 		}
+
+		// Batch fetch best chunk content for all result chapters
+		chapterIDs := make([]int64, len(results))
+		for i, r := range results {
+			chapterIDs[i] = r.Chapter.ID
+		}
+		contents, _ := s.chapterRepo.GetBestChunkContents(novelID, chapterIDs, vec)
+
 		var out []tools.ChapterResult
 		for _, r := range results {
 			if len(out) >= topK {
@@ -311,6 +382,7 @@ func (s *Service) SearchTool() func(ctx context.Context, query string, novelID i
 				ChapterNum: r.Chapter.ChapterNumber,
 				Score:      r.FinalScore,
 				Summary:    r.Chapter.Summary,
+				Content:    contents[r.Chapter.ID], // NOW POPULATED
 			})
 		}
 		b, _ := json.Marshal(out)

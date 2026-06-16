@@ -85,13 +85,15 @@ func Build(deps Deps) ([]tool.BaseTool, error) {
 func newSearchChaptersTool(deps Deps) (tool.InvokableTool, error) {
 	return utils.InferTool(
 		"search_chapters",
-		"搜索小说章节内容。传入中文关键词，返回相关章节的摘要和匹配文本片段。"+
-			"适合查找：剧情细节、事件经过、物品描述、对话内容。不适合：人物关系、境界查询。",
+		"搜索小说章节内容（RRF融合 + 交叉编码器精排）。传入中文关键词或自然语言问题，返回相关章节的摘要(summary)、匹配文本片段(content)和相关性得分(score)。"+
+			"score 字段含义：>0.7 高相关，0.3-0.7 中等，<0.3 低可信度。"+
+			"content 字段包含匹配到的具体原文片段，优先使用。"+
+			"适合查找：剧情细节、事件经过、对话内容。",
 		func(ctx context.Context, input *SearchChaptersInput) (string, error) {
 			if deps.SearchFunc == nil {
 				return `[]`, nil
 			}
-			return deps.SearchFunc(ctx, input.Query, deps.NovelID, deps.MaxChapter, 5)
+			return deps.SearchFunc(ctx, input.Query, deps.NovelID, deps.MaxChapter, 10)
 		},
 	)
 }

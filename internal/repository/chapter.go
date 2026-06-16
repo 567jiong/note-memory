@@ -177,6 +177,8 @@ func (r *ChapterRepo) ListChunksByChapter(chapterID int64) ([]model.ChapterChunk
 
 // SearchChunks performs pgvector cosine similarity search over chunk embeddings,
 // returning the top-K chapters (one result per chapter, max score).
+// Uses a subquery so that DISTINCT ON picks the best chunk per chapter internally,
+// then the outer query orders by score descending for correct ranking.
 func (r *ChapterRepo) SearchChunks(novelID int64, maxChapter int, queryVec pgvector.Vector, topK int) ([]model.Chapter, []float64, error) {
 	type row struct {
 		model.Chapter
@@ -185,16 +187,19 @@ func (r *ChapterRepo) SearchChunks(novelID int64, maxChapter int, queryVec pgvec
 
 	var rows []row
 	err := r.db.Raw(`
-		SELECT DISTINCT ON (c.id) c.*,
-		       1 - (cc.embedding <=> ?) AS score
-		FROM chapter_chunks cc
-		JOIN chapters c ON c.id = cc.chapter_id
-		WHERE cc.novel_id = ?
-		  AND c.chapter_number <= ?
-		  AND cc.embedding IS NOT NULL
-		ORDER BY c.id, score DESC
+		SELECT * FROM (
+			SELECT DISTINCT ON (c.id) c.*,
+			       1 - (cc.embedding <=> ?) AS score
+			FROM chapter_chunks cc
+			JOIN chapters c ON c.id = cc.chapter_id
+			WHERE cc.novel_id = ?
+			  AND c.chapter_number <= ?
+			  AND cc.embedding IS NOT NULL
+			ORDER BY c.id, cc.embedding <=> ?
+		) sub
+		ORDER BY score DESC
 		LIMIT ?
-	`, queryVec, novelID, maxChapter, topK).Scan(&rows).Error
+	`, queryVec, novelID, maxChapter, queryVec, topK).Scan(&rows).Error
 
 	if err != nil {
 		return nil, nil, fmt.Errorf("chunk search: %w", err)
@@ -270,6 +275,54 @@ func (r *ChapterRepo) ListChunksWithoutEmbedding(novelID int64, limit int) ([]mo
 	err := r.db.Where("novel_id = ? AND embedding IS NULL", novelID).
 		Order("id ASC").Limit(limit).Find(&chunks).Error
 	return chunks, err
+}
+
+// GetBestChunkContent returns the best-matching chunk content for a single chapter
+// given a query embedding vector. Used by the reranker to fetch candidate document texts.
+func (r *ChapterRepo) GetBestChunkContent(novelID int64, chapterID int64, queryVec pgvector.Vector) (string, error) {
+	var content string
+	err := r.db.Raw(`
+		SELECT cc.content
+		FROM chapter_chunks cc
+		WHERE cc.chapter_id = ? AND cc.novel_id = ?
+		  AND cc.embedding IS NOT NULL
+		ORDER BY cc.embedding <=> ?
+		LIMIT 1
+	`, chapterID, novelID, queryVec).Scan(&content).Error
+	if err != nil {
+		return "", fmt.Errorf("get best chunk for chapter %d: %w", chapterID, err)
+	}
+	return content, nil
+}
+
+// GetBestChunkContents returns the best-matching chunk content for multiple chapters.
+// Uses DISTINCT ON to get the nearest chunk per chapter in a single query.
+// Used by SearchTool to populate Content field in ChapterResult.
+func (r *ChapterRepo) GetBestChunkContents(novelID int64, chapterIDs []int64, queryVec pgvector.Vector) (map[int64]string, error) {
+	if len(chapterIDs) == 0 {
+		return map[int64]string{}, nil
+	}
+	type row struct {
+		ChapterID int64
+		Content   string
+	}
+	var rows []row
+	err := r.db.Raw(`
+		SELECT DISTINCT ON (cc.chapter_id) cc.chapter_id, cc.content
+		FROM chapter_chunks cc
+		WHERE cc.novel_id = ?
+		  AND cc.chapter_id IN ?
+		  AND cc.embedding IS NOT NULL
+		ORDER BY cc.chapter_id, cc.embedding <=> ?
+	`, novelID, chapterIDs, queryVec).Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("get best chunks: %w", err)
+	}
+	result := make(map[int64]string, len(rows))
+	for _, r := range rows {
+		result[r.ChapterID] = r.Content
+	}
+	return result, nil
 }
 
 // --- Entity Embeddings ---

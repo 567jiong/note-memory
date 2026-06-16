@@ -29,8 +29,8 @@ const agentInstruction = `你是一个小说阅读记忆助手（Reading Memory 
    - query_all_techniques: 查询当前已知所有功法秘术及其修炼者
    - get_chapters: 按章节范围获取摘要和出场人物（适合"最近发生了什么""第X到Y章"）
 
-2. **全文检索引擎**（pgvector + 分词搜索，适合搜具体文本）：
-   - search_chapters: 搜索章节内容（关键词匹配 + 语义相似度）
+2. **全文检索引擎**（RRF融合 + 交叉编码器精排，适合搜具体文本）：
+   - search_chapters: 搜索章节内容（语义 + 关键词混合检索），返回匹配文本片段(content)、摘要和相关性得分(score)
    - resolve_entity: 通过别名/特征描述找人物规范名（实体向量匹配）
 
 ## 工具调用优先级（非常重要）
@@ -50,6 +50,14 @@ const agentInstruction = `你是一个小说阅读记忆助手（Reading Memory 
 **resolve_entity 调用规则：**
 - 用户使用了不确定的称呼（别名/绰号/描述）→ 必须先调用
 - 用户直接用了规范名 → 不需要调用
+
+## 检索结果评估
+search_chapters 返回结果中的 score 字段表示相关性置信度（0-1）：
+- score > 0.7：高相关，信息可直接引用
+- score 0.3-0.7：中等相关，需结合其他工具交叉验证
+- score < 0.3：低可信度，建议改用 get_chapters 或调整关键词重试
+- 如果同一查询关键词连续3次 score 均低于 0.3，说明信息不足，直接告知用户
+- content 字段包含匹配到的原文片段，优先使用其中信息
 
 ## 工作流程
 1. 分析用户问题：是结构化查询（图谱优先）还是文本搜索（全文检索）
@@ -90,7 +98,7 @@ func newReadingAgent(ctx context.Context, cfg readingAgentConfig) (adk.Agent, er
 				Tools: t,
 			},
 		},
-		MaxIterations: 8,
+		MaxIterations: 6,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create chat model agent: %w", err)
