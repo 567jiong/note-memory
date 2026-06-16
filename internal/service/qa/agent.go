@@ -229,10 +229,9 @@ func runReadingAgent(ctx context.Context, agent adk.Agent, novelTitle string, ma
 	return answer, nil
 }
 
-// runReadingAgentStream runs the agent with streaming enabled, pushing each event
-// through the onEvent callback for SSE delivery to the client.
-// It reads directly from Eino's MessageStream to get token-level chunks,
-// bypassing adk.GetMessage() which would concatenate the entire stream.
+// runReadingAgentStream runs the agent with streaming enabled, pushing text/thinking
+// events through onEvent for SSE delivery. Tool calls and tool results are logged
+// server-side but never sent to the frontend.
 func runReadingAgentStream(ctx context.Context, agent adk.Agent, novelTitle string, maxChapter int, question string, onEvent func(StreamEvent)) (string, error) {
 	runner := adk.NewRunner(ctx, adk.RunnerConfig{
 		Agent:           agent,
@@ -267,23 +266,22 @@ func runReadingAgentStream(ctx context.Context, agent adk.Agent, novelTitle stri
 			return "", fmt.Errorf("agent run error: %w", event.Err)
 		}
 
-		// Check if this event has a streaming message output
 		mo := event.Output.MessageOutput
 		if mo == nil {
 			continue
 		}
 
 		if mo.IsStreaming && mo.Role == schema.Assistant {
-			// ── Streaming assistant output: read token-level chunks directly ──
-			// Emit deltas as they arrive; if tool calls appear later, tell frontend to retract.
+			// ── Streaming assistant turn: read token-level chunks directly ──
 			sr := mo.MessageStream
 			if sr == nil {
 				continue
 			}
 
 			var sb strings.Builder
-			var tcList []schema.ToolCall
-			hasToolCalls := false
+			// Merge tool call deltas by index — they arrive incrementally across chunks.
+			tcMap := make(map[int]*schema.ToolCall)
+			var maxIdx int = -1
 
 			for {
 				chunk, err := sr.Recv()
@@ -295,41 +293,67 @@ func runReadingAgentStream(ctx context.Context, agent adk.Agent, novelTitle stri
 					break
 				}
 
-				// Emit reasoning content as thinking
+				// Emit reasoning as thinking event (frontend)
 				if chunk.ReasoningContent != "" {
 					onEvent(StreamEvent{Type: "thinking", Content: chunk.ReasoningContent})
+					log.Printf("[QA-Stream] 🧠 [Step %d] LLM 思考: %s", stepNum, strings.TrimSpace(chunk.ReasoningContent))
 				}
 
-				// Collect tool call deltas
-				if len(chunk.ToolCalls) > 0 {
-					hasToolCalls = true
-					tcList = append(tcList, chunk.ToolCalls...)
+				// Merge tool call deltas by Index — tool calls arrive incrementally
+				// across multiple chunks. The Index field identifies which tool call
+				// each delta belongs to.
+				for _, tc := range chunk.ToolCalls {
+					var idx int
+					if tc.Index != nil {
+						idx = *tc.Index
+					}
+					if idx > maxIdx {
+						maxIdx = idx
+					}
+					if existing, ok := tcMap[idx]; ok {
+						// Merge delta fields into existing tool call
+						if tc.ID != "" {
+							existing.ID = tc.ID
+						}
+						if tc.Type != "" {
+							existing.Type = tc.Type
+						}
+						if tc.Function.Name != "" {
+							existing.Function.Name = tc.Function.Name
+						}
+						existing.Function.Arguments += tc.Function.Arguments
+					} else {
+						cp := tc // copy to avoid aliasing the loop variable
+						tcMap[idx] = &cp
+					}
 				}
 
-				// Emit content delta immediately (frontend will retract if tool_call follows)
+				// Emit content delta immediately to frontend
 				if chunk.Content != "" {
 					sb.WriteString(chunk.Content)
 					onEvent(StreamEvent{Type: "delta", Content: chunk.Content})
 				}
 			}
 
-			if hasToolCalls {
-				// Retract deltas — the streamed text was reasoning, not answer
-				// log.Printf("[QA-Stream] 🔧 [Step %d] LLM 调用 %d 个工具", stepNum, len(tcList))
-				// for _, tc := range tcList {
-				// 	log.Printf("[QA-Stream]   工具: %s | 参数: %s", tc.Function.Name, prettyJSON(tc.Function.Arguments))
-				// 	onEvent(StreamEvent{
-				// 		Type: "tool_call",
-				// 		Tool: tc.Function.Name,
-				// 		Args: tc.Function.Arguments,
-				// 	})
-				// }
+			// After stream ends: log tool calls to server only, NOT to frontend.
+			if len(tcMap) > 0 {
+				stepNum++
+				log.Printf("[QA-Stream] 🔧 [Step %d] LLM 调用 %d 个工具:", stepNum, len(tcMap))
+				for i := 0; i <= maxIdx; i++ {
+					if tc, ok := tcMap[i]; ok {
+						log.Printf("[QA-Stream]   工具 %d: %s", i+1, tc.Function.Name)
+						log.Printf("[QA-Stream]   参数 %d: %s", i+1, prettyJSON(tc.Function.Arguments))
+					}
+				}
+				log.Println("[QA-Stream] ───────────────────────────────────────────")
+				// Text before tool calls is intermediate reasoning; not appended to fullAnswer.
 			} else {
-				fullAnswer = sb.String()
+				// No tool calls in this turn → accumulate as final answer text.
+				fullAnswer += sb.String()
 			}
 
 		} else if !mo.IsStreaming {
-			// ── Non-streaming output: use GetMessage ──
+			// ── Non-streaming event: tool result or fallback assistant message ──
 			msg, _, err := adk.GetMessage(event)
 			if err != nil {
 				log.Printf("[QA-Stream] ⚠️ 获取消息失败: %v", err)
@@ -341,33 +365,38 @@ func runReadingAgentStream(ctx context.Context, agent adk.Agent, novelTitle stri
 
 			switch msg.Role {
 			case schema.Assistant:
+				// Fallback: non-streaming assistant message (some models may not stream).
 				if len(msg.ToolCalls) > 0 {
 					stepNum++
-					log.Printf("[QA-Stream] 🔧 [Step %d] LLM 调用 %d 个工具", stepNum, len(msg.ToolCalls))
+					log.Printf("[QA-Stream] 🔧 [Step %d] LLM 调用 %d 个工具:", stepNum, len(msg.ToolCalls))
 					for _, tc := range msg.ToolCalls {
 						log.Printf("[QA-Stream]   工具: %s | 参数: %s", tc.Function.Name, prettyJSON(tc.Function.Arguments))
-						onEvent(StreamEvent{
-							Type: "tool_call",
-							Tool: tc.Function.Name,
-							Args: tc.Function.Arguments,
-						})
 					}
+					log.Println("[QA-Stream] ───────────────────────────────────────────")
+					// Tool call info NOT sent to frontend.
 				}
 				if msg.Content != "" {
-					// Non-streaming final answer (fallback)
 					onEvent(StreamEvent{Type: "delta", Content: msg.Content})
-					fullAnswer = msg.Content
+					// Only accumulate as answer if this turn has no tool calls.
+					if len(msg.ToolCalls) == 0 {
+						fullAnswer += msg.Content
+					}
 				}
 
 			case schema.Tool:
+				// Tool execution result: server log only, NOT sent to frontend.
 				toolName := mo.ToolName
 				result := msg.Content
-				log.Printf("[QA-Stream] ✅ 工具 [%s] 返回 %d 字符", toolName, len(result))
-				onEvent(StreamEvent{
-					Type:    "tool_result",
-					Tool:    toolName,
-					Content: result,
-				})
+				log.Printf("[QA-Stream] ✅ 工具 [%s] 返回结果:", toolName)
+				log.Println("[QA-Stream] ───────────────────────────────────────────")
+				const maxResultLen = 600
+				if len(result) > maxResultLen {
+					log.Printf("[QA-Stream] %s...", result[:maxResultLen])
+					log.Printf("[QA-Stream] ... (共 %d 字符，已截断)", len(result))
+				} else {
+					log.Printf("[QA-Stream] %s", result)
+				}
+				log.Println("[QA-Stream] ───────────────────────────────────────────")
 
 			default:
 				if msg.Content != "" {
