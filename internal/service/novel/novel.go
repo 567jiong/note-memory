@@ -154,11 +154,6 @@ func (s *Service) StartParse(novelID int64) {
 	go s.chapterSvc.ParseAllChapters(context.Background(), novelID)
 }
 
-// FillEmbeddings triggers async chunk embedding backfill.
-func (s *Service) FillEmbeddings(novelID int64) {
-	go s.chapterSvc.FillChunkEmbeddings(context.Background(), novelID)
-}
-
 // ResyncGraph re-syncs all processed chapters to Neo4j using existing extracted data.
 func (s *Service) ResyncGraph(novelID int64) error {
 	return s.chapterSvc.ResyncGraph(context.Background(), novelID)

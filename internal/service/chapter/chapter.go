@@ -41,7 +41,7 @@ func NewService(chapterRepo *repository.ChapterRepo, novelRepo *repository.Novel
 		searchSvc:   searchSvc,
 		graphWriter: graphWriter,
 		entitySvc:   entitySvc,
-		concurrency: 3,
+		concurrency: 8,
 	}
 }
 
@@ -54,8 +54,8 @@ func (s *Service) ParseAllChapters(ctx context.Context, novelID int64) {
 			return
 		}
 		if len(chapters) == 0 {
-			log.Printf("[chapter] novel %d: all summaries done, backfilling chunk embeddings...", novelID)
-			s.FillChunkEmbeddings(ctx, novelID)
+			// log.Printf("[chapter] novel %d: all summaries done, backfilling chunk embeddings...", novelID)
+			// s.FillChunkEmbeddings(ctx, novelID)
 			return
 		}
 

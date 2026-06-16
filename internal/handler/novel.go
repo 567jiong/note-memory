@@ -3,30 +3,26 @@ package handler
 import (
 	"net/http"
 	"note-memory/internal/model"
-	"note-memory/internal/service/chapter"
 	"note-memory/internal/service/novel"
 	"note-memory/internal/service/qa"
 	"note-memory/internal/service/recap"
-	"note-memory/internal/service/search"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
 )
 
 type NovelHandler struct {
-	novelSvc  *novel.Service
-	recapSvc  *recap.Service
-	qaSvc     *qa.Service
-	searchSvc *search.Service
+	novelSvc *novel.Service
+	recapSvc *recap.Service
+	qaSvc    *qa.Service
 }
 
 func NewNovelHandler(
 	novelSvc *novel.Service,
 	recapSvc *recap.Service,
 	qaSvc *qa.Service,
-	searchSvc *search.Service,
 ) *NovelHandler {
-	return &NovelHandler{novelSvc: novelSvc, recapSvc: recapSvc, qaSvc: qaSvc, searchSvc: searchSvc}
+	return &NovelHandler{novelSvc: novelSvc, recapSvc: recapSvc, qaSvc: qaSvc}
 }
 
 // Upload handles TXT file upload.
@@ -127,18 +123,6 @@ func (h *NovelHandler) TriggerParse(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "AI 解析已开始（总结 + embedding + 全文索引）"})
 }
 
-// TriggerFillEmbeddings triggers backfill of empty embedding fields from chapter content.
-func (h *NovelHandler) TriggerFillEmbeddings(c *gin.Context) {
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的小说 ID"})
-		return
-	}
-
-	h.novelSvc.FillEmbeddings(id)
-	c.JSON(http.StatusOK, gin.H{"message": "Embedding 回填已开始（使用章节内容，≤400字截断）"})
-}
-
 // GenerateRecap generates a reading recovery recap.
 func (h *NovelHandler) GenerateRecap(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
@@ -219,51 +203,3 @@ func (h *NovelHandler) ResyncGraph(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"message": "知识图谱重同步完成"})
 }
-
-// Search performs hybrid semantic + full-text search on chapters.
-func (h *NovelHandler) Search(c *gin.Context) {
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的小说 ID"})
-		return
-	}
-
-	query := c.Query("q")
-	if query == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请提供搜索关键词 q"})
-		return
-	}
-
-	progress, err := h.novelSvc.GetProgress(id)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请先设置阅读进度"})
-		return
-	}
-
-	results, err := h.searchSvc.HybridSearch(c.Request.Context(), query, id, progress.CurrentChapter, 10)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "搜索失败: " + err.Error()})
-		return
-	}
-
-	type sr struct {
-		Chapter    model.Chapter `json:"chapter"`
-		SemScore   float64       `json:"semantic_score"`
-		TextScore  float64       `json:"text_score"`
-		FinalScore float64       `json:"final_score"`
-	}
-	out := make([]sr, 0, len(results))
-	for _, r := range results {
-		out = append(out, sr{
-			Chapter:    r.Chapter,
-			SemScore:   r.SemScore,
-			TextScore:  r.TextScore,
-			FinalScore: r.FinalScore,
-		})
-	}
-
-	c.JSON(http.StatusOK, gin.H{"results": out, "query": query, "mode": "hybrid"})
-}
-
-// Ensure chapter import is used for the type reference via novel.Service.
-var _ = (*chapter.Service)(nil)
