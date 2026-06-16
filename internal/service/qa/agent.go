@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"strings"
 
@@ -72,7 +73,7 @@ type readingAgentConfig struct {
 	ToolDeps  tools.Deps
 }
 
-// newReadingAgent creates a ChatModelAgent for the reading memory use case.
+// newReadingAgent creates a ChatModelAgent (streaming-capable) for the reading memory use case.
 func newReadingAgent(ctx context.Context, cfg readingAgentConfig) (adk.Agent, error) {
 	t, err := tools.Build(cfg.ToolDeps)
 	if err != nil {
@@ -96,6 +97,14 @@ func newReadingAgent(ctx context.Context, cfg readingAgentConfig) (adk.Agent, er
 	}
 
 	return agent, nil
+}
+
+// StreamEvent represents a single SSE event during streaming agent execution.
+type StreamEvent struct {
+	Type    string `json:"type"`    // "thinking", "delta", "tool_call", "tool_result", "done", "error"
+	Content string `json:"content"` // text delta or full answer (for done/error)
+	Tool    string `json:"tool,omitempty"`
+	Args    string `json:"args,omitempty"`
 }
 
 // prettyJSON reformats a JSON string with indentation for logging readability.
@@ -218,4 +227,165 @@ func runReadingAgent(ctx context.Context, agent adk.Agent, novelTitle string, ma
 		return "", fmt.Errorf("agent produced no answer")
 	}
 	return answer, nil
+}
+
+// runReadingAgentStream runs the agent with streaming enabled, pushing each event
+// through the onEvent callback for SSE delivery to the client.
+// It reads directly from Eino's MessageStream to get token-level chunks,
+// bypassing adk.GetMessage() which would concatenate the entire stream.
+func runReadingAgentStream(ctx context.Context, agent adk.Agent, novelTitle string, maxChapter int, question string, onEvent func(StreamEvent)) (string, error) {
+	runner := adk.NewRunner(ctx, adk.RunnerConfig{
+		Agent:           agent,
+		EnableStreaming: true,
+	})
+
+	input := []*schema.Message{
+		schema.SystemMessage(fmt.Sprintf(
+			"当前小说：《%s》。用户阅读进度：第 1~%d 章。绝对不能引用第 %d 章及以后的内容。",
+			novelTitle, maxChapter, maxChapter+1,
+		)),
+		schema.UserMessage(question),
+	}
+
+	log.Println("[QA-Stream] ═══════════════════════════════════════════")
+	log.Printf("[QA-Stream] 📝 用户问题: %s", question)
+	log.Printf("[QA-Stream] 📖 小说: 《%s》 | 进度: 第 %d 章", novelTitle, maxChapter)
+	log.Println("[QA-Stream] ═══════════════════════════════════════════")
+
+	iter := runner.Run(ctx, input)
+	var fullAnswer string
+	stepNum := 0
+
+	for {
+		event, ok := iter.Next()
+		if !ok {
+			break
+		}
+		if event.Err != nil {
+			log.Printf("[QA-Stream] ❌ Agent 运行错误: %v", event.Err)
+			onEvent(StreamEvent{Type: "error", Content: event.Err.Error()})
+			return "", fmt.Errorf("agent run error: %w", event.Err)
+		}
+
+		// Check if this event has a streaming message output
+		mo := event.Output.MessageOutput
+		if mo == nil {
+			continue
+		}
+
+		if mo.IsStreaming && mo.Role == schema.Assistant {
+			// ── Streaming assistant output: read token-level chunks directly ──
+			// Emit deltas as they arrive; if tool calls appear later, tell frontend to retract.
+			sr := mo.MessageStream
+			if sr == nil {
+				continue
+			}
+
+			var sb strings.Builder
+			var tcList []schema.ToolCall
+			hasToolCalls := false
+
+			for {
+				chunk, err := sr.Recv()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					log.Printf("[QA-Stream] ⚠️ 读取流块失败: %v", err)
+					break
+				}
+
+				// Emit reasoning content as thinking
+				if chunk.ReasoningContent != "" {
+					onEvent(StreamEvent{Type: "thinking", Content: chunk.ReasoningContent})
+				}
+
+				// Collect tool call deltas
+				if len(chunk.ToolCalls) > 0 {
+					hasToolCalls = true
+					tcList = append(tcList, chunk.ToolCalls...)
+				}
+
+				// Emit content delta immediately (frontend will retract if tool_call follows)
+				if chunk.Content != "" {
+					sb.WriteString(chunk.Content)
+					onEvent(StreamEvent{Type: "delta", Content: chunk.Content})
+				}
+			}
+
+			if hasToolCalls {
+				// Retract deltas — the streamed text was reasoning, not answer
+				// log.Printf("[QA-Stream] 🔧 [Step %d] LLM 调用 %d 个工具", stepNum, len(tcList))
+				// for _, tc := range tcList {
+				// 	log.Printf("[QA-Stream]   工具: %s | 参数: %s", tc.Function.Name, prettyJSON(tc.Function.Arguments))
+				// 	onEvent(StreamEvent{
+				// 		Type: "tool_call",
+				// 		Tool: tc.Function.Name,
+				// 		Args: tc.Function.Arguments,
+				// 	})
+				// }
+			} else {
+				fullAnswer = sb.String()
+			}
+
+		} else if !mo.IsStreaming {
+			// ── Non-streaming output: use GetMessage ──
+			msg, _, err := adk.GetMessage(event)
+			if err != nil {
+				log.Printf("[QA-Stream] ⚠️ 获取消息失败: %v", err)
+				continue
+			}
+			if msg == nil {
+				continue
+			}
+
+			switch msg.Role {
+			case schema.Assistant:
+				if len(msg.ToolCalls) > 0 {
+					stepNum++
+					log.Printf("[QA-Stream] 🔧 [Step %d] LLM 调用 %d 个工具", stepNum, len(msg.ToolCalls))
+					for _, tc := range msg.ToolCalls {
+						log.Printf("[QA-Stream]   工具: %s | 参数: %s", tc.Function.Name, prettyJSON(tc.Function.Arguments))
+						onEvent(StreamEvent{
+							Type: "tool_call",
+							Tool: tc.Function.Name,
+							Args: tc.Function.Arguments,
+						})
+					}
+				}
+				if msg.Content != "" {
+					// Non-streaming final answer (fallback)
+					onEvent(StreamEvent{Type: "delta", Content: msg.Content})
+					fullAnswer = msg.Content
+				}
+
+			case schema.Tool:
+				toolName := mo.ToolName
+				result := msg.Content
+				log.Printf("[QA-Stream] ✅ 工具 [%s] 返回 %d 字符", toolName, len(result))
+				onEvent(StreamEvent{
+					Type:    "tool_result",
+					Tool:    toolName,
+					Content: result,
+				})
+
+			default:
+				if msg.Content != "" {
+					log.Printf("[QA-Stream] [%s] %s", msg.Role, msg.Content)
+				}
+			}
+		}
+	}
+
+	log.Println("[QA-Stream] ═══════════════════════════════════════════")
+
+	if fullAnswer == "" {
+		log.Println("[QA-Stream] ❌ Agent 未产生任何回答")
+		onEvent(StreamEvent{Type: "error", Content: "agent produced no answer"})
+		return "", fmt.Errorf("agent produced no answer")
+	}
+
+	// Send completion event with full answer
+	onEvent(StreamEvent{Type: "done", Content: fullAnswer})
+	return fullAnswer, nil
 }

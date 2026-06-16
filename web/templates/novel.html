@@ -91,8 +91,13 @@ async function loadNovel() {
         if (!resp.ok) { alert(data.error); window.location.href = '/'; return; }
 
         document.getElementById('novel-detail').innerHTML =
+            '<div class="flex items-start justify-between">' +
+            '<div>' +
             '<h1 class="text-2xl font-bold">' + escapeHtml(data.novel.title) + '</h1>' +
-            '<p class="text-gray-500 mt-1">共 ' + data.novel.total_chapters + ' 章</p>';
+            '<p class="text-gray-500 mt-1">共 ' + data.novel.total_chapters + ' 章</p>' +
+            '</div>' +
+            '<a href="/novels/' + novelId + '/read" class="flex-shrink-0 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition text-sm font-medium">📖 开始阅读</a>' +
+            '</div>';
 
         document.getElementById('progress-section').classList.remove('hidden');
         document.getElementById('progress-input').max = data.novel.total_chapters;
@@ -182,7 +187,7 @@ async function doSearch() {
     }
 }
 
-// ---- Phase 2: Q&A ----
+// ---- Phase 2: Q&A (SSE streaming) ----
 async function askQuestion() {
     var input = document.getElementById('qa-input');
     var q = input.value.trim();
@@ -193,9 +198,9 @@ async function askQuestion() {
     // Show user question
     msgs.innerHTML += '<div class="flex justify-end"><div class="bg-blue-100 rounded-lg px-4 py-2 text-sm max-w-[80%]">' + escapeHtml(q) + '</div></div>';
 
-    // Show loading
-    var loadingId = 'loading-' + Date.now();
-    msgs.innerHTML += '<div id="' + loadingId + '" class="flex justify-start"><div class="bg-gray-100 rounded-lg px-4 py-2 text-sm text-gray-400">思考中...</div></div>';
+    // Create AI response container
+    var aiId = 'ai-msg-' + Date.now();
+    msgs.innerHTML += '<div id="' + aiId + '" class="flex justify-start"><div class="bg-gray-100 rounded-lg px-4 py-2 text-sm max-w-[80%] msg-content text-gray-400">思考中...</div></div>';
     msgs.scrollTop = msgs.scrollHeight;
     input.value = '';
 
@@ -205,18 +210,44 @@ async function askQuestion() {
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({question: q})
         });
-        var data = await resp.json();
-        var loadingEl = document.getElementById(loadingId);
-        if (loadingEl) loadingEl.remove();
-        if (resp.ok) {
-            msgs.innerHTML += '<div class="flex justify-start"><div class="bg-gray-100 rounded-lg px-4 py-2 text-sm max-w-[80%] whitespace-pre-wrap">' + escapeHtml(data.answer) + '</div></div>';
-        } else {
-            msgs.innerHTML += '<div class="flex justify-start"><div class="bg-red-50 rounded-lg px-4 py-2 text-sm text-red-600">❌ ' + escapeHtml(data.error || '问答失败') + '</div></div>';
+        var reader = resp.body.getReader();
+        var decoder = new TextDecoder();
+        var buffer = '';
+        var el = document.getElementById(aiId);
+        var contentEl = el ? el.querySelector('.msg-content') : null;
+        var firstDelta = true;
+
+        while (true) {
+            var result = await reader.read();
+            if (result.done) break;
+            buffer += decoder.decode(result.value, {stream: true});
+            var lines = buffer.split('\n');
+            buffer = lines.pop();
+            for (var i = 0; i < lines.length; i++) {
+                var line = lines[i].trim();
+                var eventData = '';
+                if (line.startsWith('event:')) {
+                    if (i + 1 < lines.length && lines[i + 1].trim().startsWith('data:')) {
+                        eventData = lines[i + 1].trim().substring(5).trim(); i++;
+                    }
+                } else if (line.startsWith('data:')) {
+                    eventData = line.substring(5).trim();
+                }
+                if (!eventData) continue;
+                try {
+                    var evt = JSON.parse(eventData);
+                    if (evt.type === 'delta' || evt.type === 'done') {
+                        if (firstDelta && contentEl) { contentEl.classList.remove('text-gray-400'); firstDelta = false; }
+                        if (contentEl) contentEl.textContent = evt.content || '';
+                    } else if (evt.type === 'error' && contentEl) {
+                        contentEl.classList.add('text-red-600'); contentEl.textContent = '❌ ' + (evt.content || '');
+                    }
+                } catch(e) {}
+            }
         }
     } catch (err) {
-        var loadingEl = document.getElementById(loadingId);
-        if (loadingEl) loadingEl.remove();
-        msgs.innerHTML += '<div class="flex justify-start"><div class="bg-red-50 rounded-lg px-4 py-2 text-sm text-red-600">❌ ' + escapeHtml(err.message) + '</div></div>';
+        var el = document.getElementById(aiId);
+        if (el) el.innerHTML = '<div class="flex justify-start"><div class="bg-red-50 rounded-lg px-4 py-2 text-sm text-red-600">❌ ' + escapeHtml(err.message) + '</div></div>';
     }
     msgs.scrollTop = msgs.scrollHeight;
 }

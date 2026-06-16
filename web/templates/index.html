@@ -105,7 +105,9 @@ async function loadNovels() {
             return '<div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition">'+
             '<div><a href="/novels/'+n.id+'" class="text-blue-600 font-medium hover:underline">'+escapeHtml(n.title)+'</a>'+
             '<p class="text-sm text-gray-400 mt-1">共 '+n.total_chapters+' 章</p></div>'+
-            '<a href="/novels/'+n.id+'" class="text-gray-400 hover:text-gray-600">查看 →</a></div>';
+            '<div class="flex items-center gap-3">'+
+            '<a href="/novels/'+n.id+'/read" class="text-sm bg-blue-600 text-white px-3 py-1.5 rounded-lg hover:bg-blue-700 transition">📖 阅读</a>'+
+            '<a href="/novels/'+n.id+'" class="text-gray-400 hover:text-gray-600">详情 →</a></div></div>';
         }).join('');
     } catch (err) { console.error(err); }
 }

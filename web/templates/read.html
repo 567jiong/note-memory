@@ -1,0 +1,734 @@
+{{ define "read.html" }}
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>阅读 - 阅读记忆助手</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Panel collapse animation */
+        #agent-panel { transition: width 0.3s ease, opacity 0.3s ease, padding 0.3s ease; }
+        #agent-panel.collapsed { width: 0 !important; opacity: 0; overflow: hidden; padding: 0 !important; min-width: 0 !important; }
+        #agent-panel.collapsed > * { display: none; }
+
+        /* Resize handle */
+        #resize-handle { cursor: col-resize; transition: background-color 0.2s; }
+        #resize-handle:hover, #resize-handle.active { background-color: #3b82f6; }
+        body.resizing { user-select: none; cursor: col-resize; }
+
+        /* Floating toggle button */
+        #toggle-agent-btn {
+            transition: transform 0.3s ease, opacity 0.3s ease;
+        }
+        #toggle-agent-btn.hidden-btn { transform: scale(0); opacity: 0; pointer-events: none; }
+
+        /* Chapter content readability */
+        #chapter-content p { margin-bottom: 1em; line-height: 2; }
+        #chapter-content { font-size: 16px; line-height: 2; }
+
+        /* SSE tool call indicator */
+        @keyframes pulse-dot {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+        .streaming-indicator .dot { animation: pulse-dot 1.4s infinite; }
+        .streaming-indicator .dot:nth-child(2) { animation-delay: 0.2s; }
+        .streaming-indicator .dot:nth-child(3) { animation-delay: 0.4s; }
+
+        /* Scrollbar styling */
+        #chapter-content::-webkit-scrollbar,
+        #qa-messages::-webkit-scrollbar { width: 6px; }
+        #chapter-content::-webkit-scrollbar-thumb,
+        #qa-messages::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
+
+        /* Markdown-style formatting */
+        .msg-content pre { background: #f3f4f6; padding: 0.5rem; border-radius: 0.375rem; overflow-x: auto; font-size: 0.875rem; }
+        .msg-content code { background: #f3f4f6; padding: 0.125rem 0.25rem; border-radius: 0.25rem; font-size: 0.875rem; }
+        .msg-content p { margin-bottom: 0.5rem; }
+        .msg-content ul { list-style: disc; margin-left: 1.5rem; margin-bottom: 0.5rem; }
+        .msg-content ol { list-style: decimal; margin-left: 1.5rem; margin-bottom: 0.5rem; }
+
+        /* Chapter link in AI response */
+        .chapter-ref { color: #3b82f6; cursor: pointer; text-decoration: underline; }
+        .chapter-ref:hover { color: #1d4ed8; }
+    </style>
+</head>
+<body class="bg-gray-100 h-screen flex flex-col overflow-hidden">
+
+<!-- Header -->
+<header class="bg-white shadow-sm border-b flex-shrink-0 z-10">
+    <div class="px-4 py-3 flex items-center justify-between">
+        <div class="flex items-center gap-4">
+            <a href="/" class="text-xl font-bold text-gray-800 hover:text-blue-600 transition">📚 阅读记忆助手</a>
+            <span class="text-gray-300">|</span>
+            <h1 id="novel-title-header" class="text-sm font-medium text-gray-600 truncate max-w-[300px]">加载中...</h1>
+        </div>
+        <div class="flex items-center gap-3">
+            <span id="progress-badge" class="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded-full font-medium">第 1 章</span>
+            <a href="/" class="text-xs text-gray-400 hover:text-gray-600">返回列表</a>
+        </div>
+    </div>
+</header>
+
+<!-- Main Content: Reader + Agent Panel -->
+<div class="flex flex-1 overflow-hidden">
+
+    <!-- === READING PANEL === -->
+    <div id="reader-panel" class="flex-1 flex flex-col overflow-hidden bg-white min-w-0">
+
+        <!-- Chapter nav bar -->
+        <div class="flex items-center justify-between px-6 py-3 border-b bg-gray-50 flex-shrink-0">
+            <button id="prev-chapter-btn" onclick="navigateChapter(-1)"
+                    class="flex items-center gap-1 text-sm text-gray-600 hover:text-blue-600 hover:bg-blue-50 px-3 py-1.5 rounded-lg transition disabled:opacity-30 disabled:cursor-not-allowed">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+                上一章
+            </button>
+
+            <div class="text-center">
+                <h2 id="chapter-title-display" class="text-base font-semibold text-gray-800">加载中...</h2>
+                <p id="chapter-info" class="text-xs text-gray-400 mt-0.5"></p>
+            </div>
+
+            <button id="next-chapter-btn" onclick="navigateChapter(1)"
+                    class="flex items-center gap-1 text-sm text-gray-600 hover:text-blue-600 hover:bg-blue-50 px-3 py-1.5 rounded-lg transition disabled:opacity-30 disabled:cursor-not-allowed">
+                下一章
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+            </button>
+        </div>
+
+        <!-- Chapter content area -->
+        <div class="flex-1 overflow-y-auto px-6 py-6" id="chapter-content-container">
+            <div id="chapter-content" class="max-w-3xl mx-auto text-gray-800">
+                <div class="animate-pulse space-y-3">
+                    <div class="h-4 bg-gray-200 rounded w-3/4"></div>
+                    <div class="h-4 bg-gray-200 rounded w-full"></div>
+                    <div class="h-4 bg-gray-200 rounded w-5/6"></div>
+                    <div class="h-4 bg-gray-200 rounded w-2/3"></div>
+                </div>
+            </div>
+
+            <!-- End-of-chapter marker -->
+            <div id="chapter-end" class="max-w-3xl mx-auto mt-8 pt-8 border-t border-gray-200 text-center">
+                <p class="text-sm text-gray-400 mb-4">— 本章完 —</p>
+                <div class="flex items-center justify-center gap-3">
+                    <button onclick="navigateChapter(-1)" id="end-prev-btn" class="text-sm text-gray-500 hover:text-blue-600 px-4 py-1.5 rounded-lg hover:bg-blue-50 transition">◀ 上一章</button>
+                    <span class="text-gray-300">|</span>
+                    <button onclick="navigateChapter(1)" id="end-next-btn" class="text-sm text-blue-600 font-medium hover:bg-blue-50 px-4 py-1.5 rounded-lg transition">下一章 ▶</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- === RESIZE HANDLE === -->
+    <div id="resize-handle" class="w-1.5 bg-gray-200 hover:bg-blue-400 transition-colors flex-shrink-0"
+         onmousedown="startResize(event)"></div>
+
+    <!-- === AI AGENT PANEL === -->
+    <div id="agent-panel" class="w-96 flex-shrink-0 flex flex-col bg-white border-l overflow-hidden" style="min-width: 200px; max-width: 600px;">
+
+        <!-- Panel header -->
+        <div class="flex items-center justify-between px-4 py-3 border-b bg-gray-50 flex-shrink-0">
+            <div class="flex items-center gap-2">
+                <span class="text-lg">🤖</span>
+                <h3 class="text-sm font-semibold text-gray-700">AI 助手</h3>
+                <span class="text-xs text-gray-400">边看边问</span>
+            </div>
+            <div class="flex items-center gap-1">
+                <button onclick="clearChat()" title="清空对话" class="text-gray-400 hover:text-gray-600 p-1 rounded transition">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                </button>
+                <button onclick="toggleAgentPanel()" title="收起面板" class="text-gray-400 hover:text-gray-600 p-1 rounded transition">
+                    <svg id="collapse-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                </button>
+            </div>
+        </div>
+
+        <!-- Messages area -->
+        <div id="qa-messages" class="flex-1 overflow-y-auto px-4 py-3 space-y-3">
+            <div class="text-center text-gray-300 text-sm py-8" id="qa-empty">
+                <p class="text-3xl mb-2">💬</p>
+                <p>阅读中遇到疑问？</p>
+                <p class="text-xs mt-1">在下方输入问题，AI 帮你回忆剧情</p>
+            </div>
+        </div>
+
+        <!-- SSR streaming indicator -->
+        <div id="streaming-indicator" class="hidden px-4 py-2">
+            <div class="flex items-center gap-2 text-xs text-blue-500 streaming-indicator">
+                <span id="streaming-status">思考中</span>
+                <span class="dot text-blue-400">.</span><span class="dot text-blue-400">.</span><span class="dot text-blue-400">.</span>
+            </div>
+        </div>
+
+        <!-- Input area -->
+        <div class="border-t p-3 flex-shrink-0">
+            <div class="flex gap-2">
+                <textarea id="qa-input" rows="1" placeholder="问点什么..."
+                          class="flex-1 border rounded-lg px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-300 focus:border-blue-400"
+                          onkeydown="handleInputKey(event)"
+                          oninput="autoResizeInput(this)"></textarea>
+                <button id="send-btn" onclick="askQuestion()"
+                        class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition text-sm flex-shrink-0 disabled:opacity-50 disabled:cursor-not-allowed">
+                    发送
+                </button>
+            </div>
+            <p class="text-xs text-gray-400 mt-1.5">Enter 发送 · Shift+Enter 换行 · <span id="context-hint">基于当前阅读进度</span></p>
+        </div>
+    </div>
+</div>
+
+<!-- Floating toggle button (visible when panel is collapsed) -->
+<button id="toggle-agent-btn"
+        class="hidden-btn fixed bottom-6 right-6 w-12 h-12 bg-blue-600 text-white rounded-full shadow-lg hover:bg-blue-700 transition flex items-center justify-center z-20"
+        onclick="toggleAgentPanel()" title="打开 AI 助手">
+    <span class="text-xl">💬</span>
+</button>
+
+<script>
+// ============================================================
+// State
+// ============================================================
+var novelId = window.location.pathname.split('/').filter(Boolean)[1];
+var currentChapter = 1;
+var totalChapters = 1;
+var novelTitle = '';
+var isStreaming = false;
+var abortController = null;
+
+// ============================================================
+// Initialization
+// ============================================================
+(async function init() {
+    await loadNovelInfo();
+    await loadChapter(currentChapter);
+    loadChatHistory();
+    setupContextMenu();
+
+    // Keyboard shortcuts
+    document.addEventListener('keydown', function(e) {
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+        if (e.key === 'ArrowLeft') navigateChapter(-1);
+        if (e.key === 'ArrowRight') navigateChapter(1);
+        if (e.key === 'Escape') collapseAgentPanel();
+    });
+})();
+
+async function loadNovelInfo() {
+    try {
+        var resp = await fetch('/api/novels/' + novelId);
+        var data = await resp.json();
+        if (!resp.ok) { alert(data.error || '加载失败'); window.location.href = '/'; return; }
+        novelTitle = data.novel.title;
+        totalChapters = data.novel.total_chapters;
+        document.getElementById('novel-title-header').textContent = novelTitle;
+        if (data.progress) {
+            currentChapter = data.progress.current_chapter;
+            document.getElementById('progress-badge').textContent = '第 ' + currentChapter + ' 章';
+        }
+    } catch (err) { console.error(err); }
+}
+
+// ============================================================
+// Chapter Loading & Navigation
+// ============================================================
+async function loadChapter(chNum) {
+    var contentEl = document.getElementById('chapter-content');
+    contentEl.innerHTML = '<div class="animate-pulse space-y-3"><div class="h-4 bg-gray-200 rounded w-3/4"></div><div class="h-4 bg-gray-200 rounded w-full"></div><div class="h-4 bg-gray-200 rounded w-5/6"></div></div>';
+
+    try {
+        var resp = await fetch('/api/novels/' + novelId + '/chapters/' + chNum);
+        var data = await resp.json();
+        if (!resp.ok) {
+            contentEl.innerHTML = '<p class="text-red-500 text-center py-12">章节加载失败: ' + (data.error || '') + '</p>';
+            return;
+        }
+
+        var ch = data.chapter;
+        currentChapter = ch.chapter_number;
+
+        // Update header
+        document.getElementById('chapter-title-display').textContent = '第' + ch.chapter_number + '章 ' + (ch.title || '');
+        document.getElementById('chapter-info').textContent = (ch.summary ? '已解析' : '未解析') + ' · 共 ' + totalChapters + ' 章';
+        document.getElementById('progress-badge').textContent = '第 ' + currentChapter + ' 章';
+
+        // Render content
+        contentEl.innerHTML = renderContent(ch.content || '(本章内容为空)');
+
+        // Update nav buttons
+        document.getElementById('prev-chapter-btn').disabled = (currentChapter <= 1);
+        document.getElementById('next-chapter-btn').disabled = (currentChapter >= totalChapters);
+        document.getElementById('end-prev-btn').style.display = (currentChapter <= 1) ? 'none' : '';
+        document.getElementById('end-next-btn').style.display = (currentChapter >= totalChapters) ? 'none' : '';
+
+        // Scroll to top
+        document.getElementById('chapter-content-container').scrollTop = 0;
+
+        // Update context hint
+        document.getElementById('context-hint').textContent = '当前: 第' + currentChapter + '章';
+
+        // Track progress (debounced)
+        trackProgress(chNum);
+
+        // Update URL hash
+        window.history.replaceState(null, '', '/novels/' + novelId + '/read#chapter-' + chNum);
+
+    } catch (err) {
+        contentEl.innerHTML = '<p class="text-red-500 text-center py-12">网络错误: ' + err.message + '</p>';
+    }
+}
+
+function navigateChapter(delta) {
+    var target = currentChapter + delta;
+    if (target < 1 || target > totalChapters) return;
+    loadChapter(target);
+}
+
+function renderContent(text) {
+    // Escape HTML
+    var div = document.createElement('div');
+    div.textContent = text;
+    var escaped = div.innerHTML;
+
+    // Split by double newlines (paragraphs)
+    var paragraphs = escaped.split('\n\n');
+    return paragraphs
+        .filter(function(p) { return p.trim(); })
+        .map(function(p) {
+            // Handle single newlines within paragraphs
+            var lines = p.trim().split('\n');
+            if (lines.length > 1 && lines.every(function(l) { return l.trim().length < 80; })) {
+                // Short lines likely poetry/dialogue
+                return '<p>' + lines.join('<br>') + '</p>';
+            }
+            return '<p>' + lines.join('') + '</p>';
+        })
+        .join('\n');
+}
+
+// ============================================================
+// Progress Tracking
+// ============================================================
+var progressTimer = null;
+
+function trackProgress(chNum) {
+    // Save locally immediately
+    try {
+        var key = 'progress_' + novelId;
+        localStorage.setItem(key, JSON.stringify({chapter: chNum, time: Date.now()}));
+    } catch(e) {}
+
+    // Sync to server with debounce
+    clearTimeout(progressTimer);
+    progressTimer = setTimeout(function() {
+        fetch('/api/novels/' + novelId + '/progress', {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({current_chapter: chNum})
+        }).catch(function(err) { console.error('Progress sync failed:', err); });
+    }, 3000);
+}
+
+// ============================================================
+// AI Agent Panel
+// ============================================================
+function toggleAgentPanel() {
+    var panel = document.getElementById('agent-panel');
+    var toggle = document.getElementById('toggle-agent-btn');
+    var icon = document.getElementById('collapse-icon');
+    var handle = document.getElementById('resize-handle');
+
+    if (panel.classList.contains('collapsed')) {
+        // Expand
+        panel.classList.remove('collapsed');
+        panel.style.width = localStorage.getItem('panel_width_' + novelId) || '384px';
+        toggle.classList.add('hidden-btn');
+        handle.style.display = '';
+        icon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>';
+    } else {
+        // Collapse
+        savePanelWidth();
+        panel.classList.add('collapsed');
+        toggle.classList.remove('hidden-btn');
+        handle.style.display = 'none';
+        icon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>';
+    }
+}
+
+function collapseAgentPanel() {
+    var panel = document.getElementById('agent-panel');
+    if (!panel.classList.contains('collapsed')) toggleAgentPanel();
+}
+
+async function askQuestion() {
+    var input = document.getElementById('qa-input');
+    var q = input.value.trim();
+    if (!q || isStreaming) return;
+
+    input.value = '';
+    autoResizeInput(input);
+
+    var msgs = document.getElementById('qa-messages');
+    var empty = document.getElementById('qa-empty');
+    if (empty) empty.classList.add('hidden');
+
+    // Add user message
+    appendMessage('user', q);
+
+    // Create AI response container
+    var aiMsgId = 'ai-msg-' + Date.now();
+    var aiDiv = document.createElement('div');
+    aiDiv.id = aiMsgId;
+    aiDiv.className = 'flex justify-start';
+    aiDiv.innerHTML = '<div class="bg-gray-50 rounded-lg px-4 py-2 text-sm max-w-[90%] msg-content"><div class="streaming-placeholder text-gray-400">思考中...</div></div>';
+    msgs.appendChild(aiDiv);
+    msgs.scrollTop = msgs.scrollHeight;
+
+    // Show streaming indicator
+    var indicator = document.getElementById('streaming-indicator');
+    indicator.classList.remove('hidden');
+    document.getElementById('send-btn').disabled = true;
+    isStreaming = true;
+
+    // Accumulate answer
+    var fullAnswer = '';
+    var contentEl = aiDiv.querySelector('.msg-content');
+    var firstChunk = true;
+
+    abortController = new AbortController();
+
+    try {
+        var resp = await fetch('/api/novels/' + novelId + '/ask', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({question: q}),
+            signal: abortController.signal
+        });
+
+        if (!resp.ok) {
+            throw new Error('HTTP ' + resp.status);
+        }
+
+        var reader = resp.body.getReader();
+        var decoder = new TextDecoder();
+        var buffer = '';
+
+        while (true) {
+            var result = await reader.read();
+            if (result.done) break;
+
+            buffer += decoder.decode(result.value, {stream: true});
+            var lines = buffer.split('\n');
+            buffer = lines.pop(); // keep incomplete line
+
+            for (var i = 0; i < lines.length; i++) {
+                var line = lines[i].trim();
+                if (!line.startsWith('event:') && !line.startsWith('data:')) continue;
+
+                var eventType = '';
+                var eventData = '';
+
+                if (line.startsWith('event:')) {
+                    eventType = line.substring(6).trim();
+                    // Next line should be data
+                    if (i + 1 < lines.length && lines[i + 1].trim().startsWith('data:')) {
+                        eventData = lines[i + 1].trim().substring(5).trim();
+                        i++;
+                    }
+                } else if (line.startsWith('data:')) {
+                    eventData = line.substring(5).trim();
+                }
+
+                if (!eventData) continue;
+
+                try {
+                    var evt = JSON.parse(eventData);
+                    handleStreamEvent(evt, contentEl, aiMsgId, eventType);
+                    if (evt.type === 'delta' || evt.type === 'done') {
+                        fullAnswer += evt.content || '';
+                    }
+                } catch(e) { console.error('Parse event error:', e, eventData); }
+            }
+        }
+
+    } catch (err) {
+        if (err.name === 'AbortError') {
+            contentEl.innerHTML = '<div class="text-gray-500">' + (fullAnswer || '(已取消)') + '</div>';
+        } else {
+            contentEl.innerHTML = '<div class="text-red-500">❌ 请求失败: ' + err.message + '</div>';
+        }
+    }
+
+    // Cleanup
+    indicator.classList.add('hidden');
+    document.getElementById('send-btn').disabled = false;
+    isStreaming = false;
+    abortController = null;
+    msgs.scrollTop = msgs.scrollHeight;
+
+    // Save to history
+    if (fullAnswer) {
+        saveChatHistory(q, fullAnswer);
+    }
+}
+
+// Track whether we've seen tool calls for the current message (to retract deltas)
+var currentMsgHadToolCalls = false;
+
+function handleStreamEvent(evt, contentEl, msgId, rawType) {
+    var msgs = document.getElementById('qa-messages');
+    var indicator = document.getElementById('streaming-indicator');
+    var statusEl = document.getElementById('streaming-status');
+
+    switch (evt.type || rawType) {
+        case 'thinking':
+            statusEl.textContent = '思考中';
+            break;
+
+        case 'tool_call':
+            // Retract any deltas shown so far — they were reasoning, not answer
+            if (!currentMsgHadToolCalls) {
+                currentMsgHadToolCalls = true;
+                contentEl.innerHTML = '';
+            }
+            statusEl.textContent = '🔍 ' + (evt.tool || '查询中') + '...';
+            // Show tool call indicator in the message
+            var toolNames = document.createElement('span');
+            toolNames.className = 'text-blue-500 text-xs';
+            toolNames.textContent = '🔧 调用: ' + (evt.tool || '');
+            contentEl.appendChild(toolNames);
+            contentEl.appendChild(document.createElement('br'));
+            break;
+
+        case 'tool_result':
+            statusEl.textContent = '整理中';
+            break;
+
+        case 'delta':
+            // If we had tool calls, deltas after tool results are the real answer
+            if (currentMsgHadToolCalls) {
+                contentEl.innerHTML = ''; // clear tool indicators
+                currentMsgHadToolCalls = false;
+            }
+            // Remove placeholder on first text
+            if (contentEl.querySelector('.streaming-placeholder')) {
+                contentEl.innerHTML = '';
+            }
+            contentEl.innerHTML += formatMsgContent(evt.content || '');
+            msgs.scrollTop = msgs.scrollHeight;
+            break;
+
+        case 'done':
+            currentMsgHadToolCalls = false;
+            indicator.classList.add('hidden');
+            // Final render (replace delta accumulation with clean format)
+            contentEl.innerHTML = formatMsgContent(evt.content || '');
+            // Make chapter references clickable
+            makeChapterRefsClickable(contentEl);
+            msgs.scrollTop = msgs.scrollHeight;
+            break;
+
+        case 'error':
+            indicator.classList.add('hidden');
+            contentEl.innerHTML = '<div class="text-red-500">❌ ' + (evt.content || '未知错误') + '</div>';
+            break;
+    }
+}
+
+function appendMessage(role, text) {
+    var msgs = document.getElementById('qa-messages');
+    var div = document.createElement('div');
+    div.className = 'flex justify-' + (role === 'user' ? 'end' : 'start');
+    var bg = role === 'user' ? 'bg-blue-100' : 'bg-gray-50';
+    div.innerHTML = '<div class="' + bg + ' rounded-lg px-4 py-2 text-sm max-w-[90%] msg-content">' + formatMsgContent(text) + '</div>';
+    msgs.appendChild(div);
+    msgs.scrollTop = msgs.scrollHeight;
+    makeChapterRefsClickable(div.querySelector('.msg-content'));
+}
+
+function formatMsgContent(text) {
+    if (!text) return '';
+    // Basic markdown-to-HTML: bold, italic, code blocks, line breaks
+    var escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    // Bold
+    escaped = escaped.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    // Inline code
+    escaped = escaped.replace(/`([^`]+)`/g, '<code>$1</code>');
+    // Newlines
+    escaped = escaped.replace(/\n/g, '<br>');
+    return escaped;
+}
+
+function makeChapterRefsClickable(el) {
+    if (!el) return;
+    // Find text like "第X章" and make it clickable to navigate
+    var html = el.innerHTML;
+    html = html.replace(/第(\d+)章/g, function(match, num) {
+        var ch = parseInt(num);
+        if (ch >= 1 && ch <= totalChapters) {
+            return '<span class="chapter-ref" onclick="loadChapter(' + ch + ')" title="跳转到第' + ch + '章">' + match + '</span>';
+        }
+        return match;
+    });
+    el.innerHTML = html;
+}
+
+function handleInputKey(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        askQuestion();
+    }
+}
+
+function autoResizeInput(el) {
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+}
+
+function clearChat() {
+    if (isStreaming) return;
+    if (!confirm('确定清空当前对话记录？')) return;
+    document.getElementById('qa-messages').innerHTML = '<div class="text-center text-gray-300 text-sm py-8" id="qa-empty"><p class="text-3xl mb-2">💬</p><p>阅读中遇到疑问？</p><p class="text-xs mt-1">在下方输入问题，AI 帮你回忆剧情</p></div>';
+    try { localStorage.removeItem('chat_' + novelId); } catch(e) {}
+}
+
+// ============================================================
+// Chat History (localStorage)
+// ============================================================
+function loadChatHistory() {
+    try {
+        var raw = localStorage.getItem('chat_' + novelId);
+        if (!raw) return;
+        var history = JSON.parse(raw);
+        if (!history || !history.length) return;
+
+        var empty = document.getElementById('qa-empty');
+        if (empty) empty.classList.add('hidden');
+
+        var msgs = document.getElementById('qa-messages');
+        history.forEach(function(item) {
+            appendMessage('user', item.q);
+            var div = document.createElement('div');
+            div.className = 'flex justify-start';
+            div.innerHTML = '<div class="bg-gray-50 rounded-lg px-4 py-2 text-sm max-w-[90%] msg-content">' + formatMsgContent(item.a) + '</div>';
+            msgs.appendChild(div);
+            makeChapterRefsClickable(div.querySelector('.msg-content'));
+        });
+        msgs.scrollTop = msgs.scrollHeight;
+    } catch(e) {}
+}
+
+function saveChatHistory(q, a) {
+    try {
+        var key = 'chat_' + novelId;
+        var raw = localStorage.getItem(key);
+        var history = raw ? JSON.parse(raw) : [];
+        history.push({q: q, a: a, time: Date.now()});
+        // Keep only last 50 entries
+        if (history.length > 50) history = history.slice(-50);
+        localStorage.setItem(key, JSON.stringify(history));
+    } catch(e) {}
+}
+
+// ============================================================
+// Panel Resize (drag to resize)
+// ============================================================
+function startResize(e) {
+    e.preventDefault();
+    var panel = document.getElementById('agent-panel');
+    var handle = document.getElementById('resize-handle');
+    var startX = e.clientX;
+    var startWidth = panel.offsetWidth;
+
+    handle.classList.add('active');
+    document.body.classList.add('resizing');
+
+    function onMove(e) {
+        var newWidth = startWidth + (startX - e.clientX);
+        newWidth = Math.max(200, Math.min(600, newWidth));
+        panel.style.width = newWidth + 'px';
+    }
+
+    function onUp() {
+        handle.classList.remove('active');
+        document.body.classList.remove('resizing');
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        savePanelWidth();
+    }
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+}
+
+function savePanelWidth() {
+    var panel = document.getElementById('agent-panel');
+    if (!panel.classList.contains('collapsed')) {
+        try { localStorage.setItem('panel_width_' + novelId, panel.style.width); } catch(e) {}
+    }
+}
+
+// Restore panel width
+(function() {
+    try {
+        var saved = localStorage.getItem('panel_width_' + novelId);
+        if (saved) {
+            document.getElementById('agent-panel').style.width = saved;
+        }
+    } catch(e) {}
+})();
+
+// ============================================================
+// Context Menu (right-click selected text to ask AI)
+// ============================================================
+function setupContextMenu() {
+    var reader = document.getElementById('reader-panel');
+    reader.addEventListener('contextmenu', function(e) {
+        var sel = window.getSelection();
+        var text = sel.toString().trim();
+        if (!text || text.length < 2) return;
+
+        e.preventDefault();
+        e.stopPropagation();
+
+        // Remove existing custom menu
+        var existing = document.getElementById('custom-context-menu');
+        if (existing) existing.remove();
+
+        var menu = document.createElement('div');
+        menu.id = 'custom-context-menu';
+        menu.className = 'fixed bg-white rounded-lg shadow-lg border py-1 z-50';
+        menu.style.left = e.clientX + 'px';
+        menu.style.top = e.clientY + 'px';
+        menu.innerHTML = '<div class="px-4 py-2 text-sm hover:bg-blue-50 cursor-pointer flex items-center gap-2"><span>🤖</span> 问问 AI: "<span class="text-blue-600 font-medium max-w-[200px] truncate inline-block align-bottom">' + escapeHtml(text.substring(0, 50)) + '</span>"</div>';
+
+        menu.querySelector('div').onclick = function() {
+            // Expand panel if collapsed
+            var panel = document.getElementById('agent-panel');
+            if (panel.classList.contains('collapsed')) toggleAgentPanel();
+
+            // Set question
+            document.getElementById('qa-input').value = text;
+            autoResizeInput(document.getElementById('qa-input'));
+            askQuestion();
+            menu.remove();
+        };
+
+        document.body.appendChild(menu);
+
+        // Remove on click elsewhere
+        var cleanup = function() {
+            var m = document.getElementById('custom-context-menu');
+            if (m) m.remove();
+            document.removeEventListener('click', cleanup);
+        };
+        setTimeout(function() { document.addEventListener('click', cleanup); }, 0);
+    });
+}
+
+function escapeHtml(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+</script>
+
+</body>
+</html>
+{{ end }}

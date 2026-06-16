@@ -44,22 +44,22 @@ func NewService(
 	}
 }
 
-// AskQuestion answers a user question using the Eino ADK Reading Memory Agent.
-func (s *Service) AskQuestion(ctx context.Context, novelID int64, question string) (string, error) {
+// buildAgentConfig creates the agent configuration for a given novel/progress context.
+func (s *Service) buildAgentConfig(novelID int64) (readingAgentConfig, string, int, error) {
 	novel, err := s.novelRepo.GetByID(novelID)
 	if err != nil {
-		return "", fmt.Errorf("get novel: %w", err)
+		return readingAgentConfig{}, "", 0, fmt.Errorf("get novel: %w", err)
 	}
 
 	progress, err := s.progressRepo.GetByNovel(novelID)
 	if err != nil {
-		return "", fmt.Errorf("get progress: %w", err)
+		return readingAgentConfig{}, "", 0, fmt.Errorf("get progress: %w", err)
 	}
 
 	maxChapter := progress.CurrentChapter
 	novelTitle := novel.Title
 
-	readingAgent, err := newReadingAgent(ctx, readingAgentConfig{
+	cfg := readingAgentConfig{
 		ChatModel: s.chatModel,
 		ToolDeps: tools.Deps{
 			NovelID:           novelID,
@@ -72,9 +72,22 @@ func (s *Service) AskQuestion(ctx context.Context, novelID int64, question strin
 			TechniqueFunc:     s.graphReader.TechniqueTool(),
 			AllTechniquesFunc: s.graphReader.AllTechniquesTool(),
 		},
-	})
+	}
+	return cfg, novelTitle, maxChapter, nil
+}
+
+// AskQuestion answers a user question via the Eino ADK Reading Memory Agent with streaming.
+// Each StreamEvent is pushed through onEvent as the agent runs, enabling SSE delivery.
+// Returns the final assembled answer for caching/logging purposes.
+func (s *Service) AskQuestion(ctx context.Context, novelID int64, question string, onEvent func(StreamEvent)) (string, error) {
+	cfg, novelTitle, maxChapter, err := s.buildAgentConfig(novelID)
+	if err != nil {
+		return "", err
+	}
+
+	readingAgent, err := newReadingAgent(ctx, cfg)
 	if err != nil {
 		return "", fmt.Errorf("create agent: %w", err)
 	}
-	return runReadingAgent(ctx, readingAgent, novelTitle, maxChapter, question)
+	return runReadingAgentStream(ctx, readingAgent, novelTitle, maxChapter, question, onEvent)
 }

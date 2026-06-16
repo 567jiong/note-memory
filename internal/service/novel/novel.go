@@ -149,6 +149,11 @@ func (s *Service) GetProgress(novelID int64) (*model.ReadingProgress, error) {
 	return s.progressRepo.GetByNovel(novelID)
 }
 
+// GetChapterContent returns the full content of a single chapter by novel ID and chapter number.
+func (s *Service) GetChapterContent(novelID int64, chapterNumber int) (*model.Chapter, error) {
+	return s.chapterRepo.GetByNovelAndNumber(novelID, chapterNumber)
+}
+
 // StartParse triggers async AI parsing for all unprocessed chapters.
 func (s *Service) StartParse(novelID int64) {
 	go s.chapterSvc.ParseAllChapters(context.Background(), novelID)
