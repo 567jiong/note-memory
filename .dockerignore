@@ -1,0 +1,40 @@
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment (use .env.example)
+.env
+
+# Binaries
+*.exe
+*.exe~
+server
+note-memory
+
+# Test data
+testdata/
+
+# Docs (not needed at runtime)
+docs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker/
+docker-compose.yml
+Dockerfile
+.dockerignore
+
+# Claude
+.claude/
+
+# Go vendor
+vendor/
