@@ -71,6 +71,7 @@ func (s *Service) buildAgentConfig(novelID int64) (readingAgentConfig, string, i
 			ChaptersFunc:      s.searchSvc.ChaptersTool(),
 			TechniqueFunc:     s.graphReader.TechniqueTool(),
 			AllTechniquesFunc: s.graphReader.AllTechniquesTool(),
+			EventsFunc:        s.graphReader.EventsTool(),
 		},
 	}
 	return cfg, novelTitle, maxChapter, nil

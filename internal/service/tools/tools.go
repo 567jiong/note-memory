@@ -36,11 +36,14 @@ type Deps struct {
 
 	// AllTechniquesFunc queries all known techniques from Neo4j.
 	AllTechniquesFunc func(ctx context.Context, novelID int64, maxChapter int) (string, error)
+
+	// EventsFunc queries events a character participated in from Neo4j (max 20, newest first).
+	EventsFunc func(ctx context.Context, novelID int64, charName string, maxChapter int) (string, error)
 }
 
 // Build creates the full tool set for a Retrieval / Reading Memory agent.
-// Returns seven tools: search_chapters, resolve_entity, query_timeline, query_relations,
-// get_chapters, query_techniques, query_all_techniques.
+// Returns eight tools: search_chapters, resolve_entity, query_timeline, query_relations,
+// get_chapters, query_techniques, query_all_techniques, query_events.
 func Build(deps Deps) ([]tool.BaseTool, error) {
 	searchTool, err := newSearchChaptersTool(deps)
 	if err != nil {
@@ -77,7 +80,12 @@ func Build(deps Deps) ([]tool.BaseTool, error) {
 		return nil, fmt.Errorf("create query_all_techniques tool: %w", err)
 	}
 
-	return []tool.BaseTool{searchTool, resolveTool, timelineTool, relationsTool, chaptersTool, techniquesTool, allTechniquesTool}, nil
+	eventsTool, err := newQueryEventsTool(deps)
+	if err != nil {
+		return nil, fmt.Errorf("create query_events tool: %w", err)
+	}
+
+	return []tool.BaseTool{searchTool, resolveTool, timelineTool, relationsTool, chaptersTool, techniquesTool, allTechniquesTool, eventsTool}, nil
 }
 
 // --- search_chapters ---
@@ -217,6 +225,23 @@ func newQueryAllTechniquesTool(deps Deps) (tool.InvokableTool, error) {
 				return `[]`, nil
 			}
 			return deps.AllTechniquesFunc(ctx, deps.NovelID, deps.MaxChapter)
+		},
+	)
+}
+
+// --- query_events ---
+
+func newQueryEventsTool(deps Deps) (tool.InvokableTool, error) {
+	return utils.InferTool(
+		"query_events",
+		"查询某个人物参与的事件。需要提供规范角色名，返回最近 20 个事件（按章节倒序）。"+
+			"每条记录包含事件标题、章节号、摘要和参与角色。"+
+			"适合回答：'XXX经历了哪些大事''XXX在什么时候做了什么'。",
+		func(ctx context.Context, input *QueryEventsInput) (string, error) {
+			if deps.EventsFunc == nil {
+				return `[]`, nil
+			}
+			return deps.EventsFunc(ctx, deps.NovelID, input.CharacterName, deps.MaxChapter)
 		},
 	)
 }

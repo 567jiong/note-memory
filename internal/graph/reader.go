@@ -255,6 +255,64 @@ func (r *GraphReader) AllTechniques(ctx context.Context, novelID int64, maxChapt
 	return entries, result.Err()
 }
 
+// ---- Event queries ----
+
+// EventEntry is a single event record for a specific character.
+type EventEntry struct {
+	Title   string
+	Chapter int
+	Summary string
+	Role    string // character's role in the event
+}
+
+// CharacterEvents returns events a character has participated in, ordered by chapter.
+// Limited to 20 most recent events to keep context manageable.
+func (r *GraphReader) CharacterEvents(ctx context.Context, novelID int64, charName string, maxChapter int) ([]EventEntry, error) {
+	if !r.IsEnabled() {
+		return nil, nil
+	}
+
+	s := r.driver.Session(ctx)
+	if s == nil {
+		return nil, nil
+	}
+	defer s.Close(ctx)
+
+	result, err := s.Run(ctx, `
+		MATCH (c:Character {novel_id: $novelId, name: $name})
+		      -[p:PARTICIPATES_IN]->(e:Event)
+		WHERE p.at_chapter <= $maxChapter
+		RETURN e.title AS title, e.chapter_number AS chapter,
+		       e.summary AS summary, p.role AS role
+		ORDER BY e.chapter_number DESC
+		LIMIT 20
+	`, map[string]any{
+		"novelId":    novelID,
+		"name":       charName,
+		"maxChapter": maxChapter,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("character events: %w", err)
+	}
+
+	var entries []EventEntry
+	for result.Next(ctx) {
+		record := result.Record()
+		title, _ := record.Get("title")
+		chapter, _ := record.Get("chapter")
+		summary, _ := record.Get("summary")
+		role, _ := record.Get("role")
+
+		entries = append(entries, EventEntry{
+			Title:   toString(title),
+			Chapter: toInt(chapter),
+			Summary: toString(summary),
+			Role:    toString(role),
+		})
+	}
+	return entries, result.Err()
+}
+
 // ---- Tool factories for ADK agents ----
 
 // TimelineTool returns a closure matching tools.Deps.TimelineFunc.
@@ -334,7 +392,33 @@ func (r *GraphReader) AllTechniquesTool() func(ctx context.Context, novelID int6
 		for _, e := range entries {
 			out = append(out, tools.TechniqueEntry{
 				Technique: e.Technique, Level: e.Level, Action: e.Action,
-				Chapter: e.Chapter, Description: e.Description,
+				Chapter: e.Chapter, Practitioner: e.Practitioner, Description: e.Description,
+			})
+		}
+		b, _ := json.Marshal(out)
+		return string(b), nil
+	}
+}
+
+// EventsTool returns a closure matching tools.Deps.EventsFunc.
+// Requires a character name — returns up to 20 most recent events they participated in.
+func (r *GraphReader) EventsTool() func(ctx context.Context, novelID int64, charName string, maxChapter int) (string, error) {
+	return func(ctx context.Context, novelID int64, charName string, maxChapter int) (string, error) {
+		if r == nil || !r.IsEnabled() {
+			return `[]`, nil
+		}
+		if charName == "" {
+			return `[]`, nil // character name is required
+		}
+		entries, err := r.CharacterEvents(ctx, novelID, charName, maxChapter)
+		if err != nil {
+			return "", err
+		}
+		var out []tools.EventEntry
+		for _, e := range entries {
+			out = append(out, tools.EventEntry{
+				Title: e.Title, Chapter: e.Chapter,
+				Summary: e.Summary, Role: e.Role,
 			})
 		}
 		b, _ := json.Marshal(out)
