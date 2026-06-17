@@ -9,96 +9,63 @@
 </head>
 <body class="bg-gray-50 min-h-screen">
 <header class="bg-white shadow-sm border-b">
-    <div class="max-w-6xl mx-auto px-4 py-4 flex items-center justify-between">
+    <div class="max-w-4xl mx-auto px-4 py-4 flex items-center justify-between">
         <a href="/" class="text-xl font-bold text-gray-800">📚 阅读记忆助手</a>
         <span class="text-sm text-gray-500">Reading Memory Agent</span>
     </div>
 </header>
-<main class="max-w-6xl mx-auto px-4 py-8">
-    <a href="/" class="text-blue-600 hover:underline text-sm mb-4 inline-block">← 返回列表</a>
+<main class="max-w-4xl mx-auto px-4 py-8">
 
-    <div class="flex gap-6">
-        <!-- Left: Sessions sidebar -->
-        <div class="w-56 flex-shrink-0 space-y-3">
-            <div class="bg-white rounded-lg shadow p-3">
-                <button onclick="createSession()" class="w-full bg-indigo-600 text-white px-3 py-2 rounded-lg hover:bg-indigo-700 transition text-sm font-medium">+ 新建聊天</button>
+<div class="space-y-6">
+    <a href="/" class="text-blue-600 hover:underline text-sm">← 返回列表</a>
+
+    <div id="novel-detail" class="bg-white rounded-lg shadow p-6">
+        <div class="animate-pulse space-y-4">
+            <div class="h-6 bg-gray-200 rounded w-1/3"></div>
+            <div class="h-4 bg-gray-200 rounded w-1/4"></div>
+        </div>
+    </div>
+
+    <!-- Progress + Actions -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div id="progress-section" class="bg-white rounded-lg shadow p-6 hidden">
+            <h2 class="text-lg font-semibold mb-4">📍 阅读进度</h2>
+            <div class="flex items-center gap-3">
+                <span class="text-gray-600 text-sm">当前读到：</span>
+                <input type="number" id="progress-input" min="1" class="border rounded px-3 py-2 w-20 text-center text-sm" value="1">
+                <span class="text-gray-400 text-sm">章</span>
+                <button onclick="updateProgress()" class="bg-green-600 text-white px-3 py-2 rounded-lg hover:bg-green-700 transition text-sm">更新</button>
             </div>
-            <div id="session-list" class="space-y-1">
-                <div class="text-center text-gray-300 text-xs py-2">加载中...</div>
-            </div>
+            <p id="progress-feedback" class="text-sm mt-2 hidden"></p>
         </div>
 
-        <!-- Right: Main content -->
-        <div class="flex-1 space-y-6">
-            <!-- Novel info -->
-            <div id="novel-detail" class="bg-white rounded-lg shadow p-6">
-                <div class="animate-pulse space-y-4">
-                    <div class="h-6 bg-gray-200 rounded w-1/3"></div>
-                    <div class="h-4 bg-gray-200 rounded w-1/4"></div>
-                </div>
-            </div>
-
-            <!-- Progress + Actions -->
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div id="progress-section" class="bg-white rounded-lg shadow p-6 hidden">
-                    <h2 class="text-lg font-semibold mb-4">📍 阅读进度</h2>
-                    <div class="flex items-center gap-3">
-                        <span class="text-gray-600 text-sm">当前读到：</span>
-                        <input type="number" id="progress-input" min="1" class="border rounded px-3 py-2 w-20 text-center text-sm" value="1">
-                        <span class="text-gray-400 text-sm">章</span>
-                        <button onclick="updateProgress()" class="bg-green-600 text-white px-3 py-2 rounded-lg hover:bg-green-700 transition text-sm">更新</button>
-                    </div>
-                    <p id="progress-feedback" class="text-sm mt-2 hidden"></p>
-                </div>
-
-                <div id="actions-section" class="bg-white rounded-lg shadow p-6 hidden">
-                    <h2 class="text-lg font-semibold mb-4">🔧 操作</h2>
-                    <div class="flex flex-wrap gap-2">
-                        <button onclick="triggerParse()" class="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition text-sm">🔄 AI 解析</button>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Chat Area -->
-            <div class="bg-white rounded-lg shadow flex flex-col" style="min-height: 500px;">
-                <div id="chat-header" class="px-6 py-3 border-b flex items-center justify-between bg-gray-50 rounded-t-lg">
-                    <h2 class="text-lg font-semibold" id="chat-title">🤖 智能问答</h2>
-                    <span id="chat-empty-hint" class="text-xs text-gray-400">选择或创建一个聊天开始对话</span>
-                </div>
-                <div id="qa-messages" class="flex-1 space-y-3 p-6 overflow-y-auto" style="max-height: 500px;">
-                    <div class="text-center text-gray-300 text-sm py-8" id="qa-empty">👈 选择左侧聊天或新建一个</div>
-                </div>
-                <div class="px-6 py-4 border-t bg-gray-50 rounded-b-lg">
-                    <div class="flex gap-2">
-                        <input type="text" id="qa-input" placeholder="输入问题..." class="flex-1 border rounded-lg px-4 py-2 text-sm" onkeydown="if(event.key==='Enter')askQuestion()" disabled>
-                        <button onclick="askQuestion()" id="qa-btn" class="bg-indigo-600 text-white px-5 py-2 rounded-lg hover:bg-indigo-700 transition text-sm disabled:opacity-50" disabled>发送</button>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Search -->
-            <div class="bg-white rounded-lg shadow p-6">
-                <h2 class="text-lg font-semibold mb-3">🔍 语义搜索</h2>
-                <div class="flex gap-2">
-                    <input type="text" id="search-input" placeholder="搜索人物、事件、关键词..." class="flex-1 border rounded-lg px-4 py-2 text-sm" onkeydown="if(event.key==='Enter')doSearch()">
-                    <button onclick="doSearch()" class="bg-blue-600 text-white px-5 py-2 rounded-lg hover:bg-blue-700 transition text-sm">搜索</button>
-                </div>
-                <div id="search-results" class="mt-4 hidden"></div>
-            </div>
-
-            <!-- Chapters -->
-            <div id="chapters-section" class="bg-white rounded-lg shadow p-6 hidden">
-                <h2 class="text-lg font-semibold mb-4">📑 章节列表</h2>
-                <div id="chapter-list" class="space-y-1 max-h-80 overflow-y-auto"></div>
+        <div id="actions-section" class="bg-white rounded-lg shadow p-6 hidden">
+            <h2 class="text-lg font-semibold mb-4">🔧 操作</h2>
+            <div class="flex flex-wrap gap-2">
+                <button onclick="triggerParse()" class="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition text-sm">🔄 AI 解析</button>
             </div>
         </div>
     </div>
+
+    <!-- Sessions overview -->
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-lg font-semibold mb-3">💬 聊天记录</h2>
+        <div id="session-list" class="space-y-1">
+            <div class="text-center text-gray-300 text-xs py-2">加载中...</div>
+        </div>
+    </div>
+
+    <!-- Chapters -->
+    <div id="chapters-section" class="bg-white rounded-lg shadow p-6 hidden">
+        <h2 class="text-lg font-semibold mb-4">📑 章节列表</h2>
+        <div id="chapter-list" class="space-y-1 max-h-80 overflow-y-auto"></div>
+    </div>
+</div>
 
 </main>
 <footer class="text-center text-gray-400 text-sm py-8">Reading Memory Agent MVP — 帮你快速恢复阅读状态</footer>
 <script>
 var novelId = window.location.pathname.split('/').filter(Boolean)[1];
-var currentSessionId = null;
 
 async function loadNovel() {
     try {
@@ -161,180 +128,32 @@ async function loadSessions() {
         var data = await resp.json();
         var list = document.getElementById('session-list');
         if (!data.sessions || data.sessions.length === 0) {
-            list.innerHTML = '<div class="text-center text-gray-400 text-xs py-4">暂无聊天记录</div>';
+            list.innerHTML = '<div class="text-center text-gray-400 text-xs py-4">暂无聊天记录，<a href="/novels/' + novelId + '/read" class="text-blue-500 hover:underline">去阅读页面开始对话</a></div>';
             return;
         }
         list.innerHTML = data.sessions.map(function(s) {
-            var active = s.id === currentSessionId ? 'bg-indigo-50 border-indigo-300' : 'bg-white hover:bg-gray-50';
             var title = s.title || ('聊天 ' + s.id.substring(0, 8));
-            return '<div class="rounded-lg border p-2 cursor-pointer text-sm ' + active + ' flex items-center justify-between group" onclick="selectSession(\'' + s.id + '\')">' +
-                '<span class="truncate flex-1">' + escapeHtml(title) + '</span>' +
-                '<button onclick="event.stopPropagation();deleteSession(\'' + s.id + '\')" class="text-gray-300 hover:text-red-500 ml-1 hidden group-hover:inline text-xs">✕</button>' +
-                '</div>';
+            return '<a href="/novels/' + novelId + '/read" class="flex items-center justify-between p-2 rounded bg-white hover:bg-gray-50 border text-sm">' +
+                '<span class="truncate">' + escapeHtml(title) + '</span>' +
+                '<span class="text-xs text-gray-400 flex-shrink-0 ml-2">' + formatTime(s.updated_at) + '</span>' +
+                '</a>';
         }).join('');
     } catch (err) { console.error(err); }
 }
 
-async function createSession() {
-    try {
-        var resp = await fetch('/api/novels/' + novelId + '/sessions', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}' });
-        var data = await resp.json();
-        if (resp.ok && data.session) {
-            selectSession(data.session.id);
-            await loadSessions();
-        }
-    } catch (err) { console.error(err); }
-}
-
-async function selectSession(sid) {
-    currentSessionId = sid;
-    document.getElementById('qa-empty').classList.add('hidden');
-    document.getElementById('chat-empty-hint').classList.add('hidden');
-    document.getElementById('qa-input').disabled = false;
-    document.getElementById('qa-btn').disabled = false;
-    document.getElementById('chat-title').textContent = '🤖 智能问答';
-
-    // Load message history
-    var msgs = document.getElementById('qa-messages');
-    msgs.innerHTML = '<div class="text-center text-gray-300 text-sm">加载历史...</div>';
-    try {
-        var resp = await fetch('/api/novels/' + novelId + '/sessions/' + sid + '/messages');
-        var data = await resp.json();
-        msgs.innerHTML = '';
-        if (data.messages && data.messages.length > 0) {
-            data.messages.forEach(function(m) {
-                if (m.role === 'user') {
-                    msgs.innerHTML += '<div class="flex justify-end"><div class="bg-blue-100 rounded-lg px-4 py-2 text-sm max-w-[75%]">' + escapeHtml(m.content) + '</div></div>';
-                } else if (m.role === 'assistant' && m.content) {
-                    msgs.innerHTML += '<div class="flex justify-start"><div class="bg-gray-100 rounded-lg px-4 py-2 text-sm max-w-[75%]">' + escapeHtml(m.content) + '</div></div>';
-                }
-            });
-            msgs.scrollTop = msgs.scrollHeight;
-        } else {
-            msgs.innerHTML = '<div class="text-center text-gray-300 text-sm py-4">开始新的对话</div>';
-        }
-    } catch (err) { msgs.innerHTML = ''; }
-
-    loadSessions();
-    document.getElementById('qa-input').focus();
-}
-
-async function deleteSession(sid) {
-    if (!confirm('确定删除这个聊天？')) return;
-    try {
-        await fetch('/api/novels/' + novelId + '/sessions/' + sid, { method: 'DELETE' });
-        if (currentSessionId === sid) {
-            currentSessionId = null;
-            document.getElementById('qa-input').disabled = true;
-            document.getElementById('qa-btn').disabled = true;
-            document.getElementById('qa-messages').innerHTML = '<div class="text-center text-gray-300 text-sm py-8" id="qa-empty">👈 选择左侧聊天或新建一个</div>';
-            document.getElementById('chat-empty-hint').classList.remove('hidden');
-            document.getElementById('chat-title').textContent = '🤖 智能问答';
-        }
-        await loadSessions();
-    } catch (err) { console.error(err); }
-}
-
-// ---- Q&A (session-based SSE) ----
-
-async function askQuestion() {
-    if (!currentSessionId) return;
-    var input = document.getElementById('qa-input');
-    var q = input.value.trim();
-    if (!q) return;
-    var msgs = document.getElementById('qa-messages');
-    document.getElementById('qa-empty').classList.add('hidden');
-    document.getElementById('chat-empty-hint').classList.add('hidden');
-
-    // Show user question
-    msgs.innerHTML += '<div class="flex justify-end"><div class="bg-blue-100 rounded-lg px-4 py-2 text-sm max-w-[75%]">' + escapeHtml(q) + '</div></div>';
-
-    // Create AI response container
-    var aiId = 'ai-msg-' + Date.now();
-    msgs.innerHTML += '<div id="' + aiId + '" class="flex justify-start"><div class="bg-gray-100 rounded-lg px-4 py-2 text-sm max-w-[75%] msg-content text-gray-400">思考中...</div></div>';
-    msgs.scrollTop = msgs.scrollHeight;
-    input.value = '';
-
-    try {
-        var resp = await fetch('/api/novels/' + novelId + '/sessions/' + currentSessionId + '/ask', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({question: q})
-        });
-        var reader = resp.body.getReader();
-        var decoder = new TextDecoder();
-        var buffer = '';
-        var el = document.getElementById(aiId);
-        var contentEl = el ? el.querySelector('.msg-content') : null;
-        var firstDelta = true;
-
-        while (true) {
-            var result = await reader.read();
-            if (result.done) break;
-            buffer += decoder.decode(result.value, {stream: true});
-            var lines = buffer.split('\n');
-            buffer = lines.pop();
-            for (var i = 0; i < lines.length; i++) {
-                var line = lines[i].trim();
-                var eventData = '';
-                if (line.startsWith('event:')) {
-                    if (i + 1 < lines.length && lines[i + 1].trim().startsWith('data:')) {
-                        eventData = lines[i + 1].trim().substring(5).trim(); i++;
-                    }
-                } else if (line.startsWith('data:')) {
-                    eventData = line.substring(5).trim();
-                }
-                if (!eventData) continue;
-                try {
-                    var evt = JSON.parse(eventData);
-                    if (evt.type === 'delta' || evt.type === 'done') {
-                        if (firstDelta && contentEl) { contentEl.classList.remove('text-gray-400'); firstDelta = false; }
-                        if (contentEl) contentEl.textContent = evt.content || '';
-                    } else if (evt.type === 'error' && contentEl) {
-                        contentEl.classList.add('text-red-600'); contentEl.textContent = '❌ ' + (evt.content || '');
-                    }
-                } catch(e) {}
-            }
-        }
-    } catch (err) {
-        var el = document.getElementById(aiId);
-        if (el) el.innerHTML = '<div class="flex justify-start"><div class="bg-red-50 rounded-lg px-4 py-2 text-sm text-red-600">❌ ' + escapeHtml(err.message) + '</div></div>';
-    }
-    msgs.scrollTop = msgs.scrollHeight;
-}
-
-// ---- Search ----
-
-async function doSearch() {
-    var q = document.getElementById('search-input').value.trim();
-    if (!q) return;
-    var container = document.getElementById('search-results');
-    container.classList.remove('hidden');
-    container.innerHTML = '<p class="text-gray-400 text-sm">🔍 搜索中...</p>';
-    try {
-        var resp = await fetch('/api/novels/' + novelId + '/search?q=' + encodeURIComponent(q));
-        var data = await resp.json();
-        if (!data.results || data.results.length === 0) {
-            container.innerHTML = '<p class="text-gray-400 text-sm">未找到相关章节</p>';
-            return;
-        }
-        container.innerHTML = '<p class="text-sm text-gray-500 mb-2">找到 ' + data.results.length + ' 个相关章节：</p>' +
-            data.results.map(function(r) {
-                return '<div class="p-3 bg-gray-50 rounded-lg mb-2 text-sm">' +
-                    '<span class="font-medium text-blue-600">第' + r.chapter.chapter_number + '章</span> ' +
-                    '<span class="text-gray-600">' + escapeHtml(r.chapter.title) + '</span> ' +
-                    '<span class="text-xs text-gray-400">(' + (r.score*100).toFixed(1) + '% 匹配)</span>' +
-                    (r.chapter.summary ? '<p class="text-gray-500 mt-1 text-xs">' + escapeHtml(r.chapter.summary) + '</p>' : '') +
-                    '</div>';
-            }).join('');
-    } catch (err) {
-        container.innerHTML = '<p class="text-red-500 text-sm">❌ ' + err.message + '</p>';
-    }
+function formatTime(t) {
+    if (!t) return '';
+    var d = new Date(t);
+    var now = new Date();
+    var diff = now - d;
+    if (diff < 60000) return '刚刚';
+    if (diff < 3600000) return Math.floor(diff / 60000) + '分钟前';
+    if (diff < 86400000) return Math.floor(diff / 3600000) + '小时前';
+    return (d.getMonth() + 1) + '/' + d.getDate();
 }
 
 function escapeHtml(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
-// Init
 loadNovel();
 loadSessions();
 </script>
