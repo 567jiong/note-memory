@@ -7,11 +7,11 @@ import (
 )
 
 type Config struct {
-	DB     DBConfig
-	OpenAI OpenAIConfig
-	Server ServerConfig
-	Neo4j  Neo4jConfig
-	Rerank RerankConfig
+	DB      DBConfig
+	OpenAI  OpenAIConfig
+	Server  ServerConfig
+	Neo4j   Neo4jConfig
+	Rerank  RerankConfig
 }
 
 type DBConfig struct {

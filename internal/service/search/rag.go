@@ -7,7 +7,6 @@ import (
 	"note-memory/internal/repository"
 	"note-memory/internal/graph"
 	"note-memory/internal/service/entity"
-	"note-memory/internal/service/tools"
 	"strings"
 
 	einomodel "github.com/cloudwego/eino/components/model"
@@ -41,12 +40,6 @@ type SearchResult struct {
 	Chapter        model.Chapter
 	Score          float64
 	MatchedContent string // chunk content that matched the query (empty if chapter-level match)
-}
-
-// AgenticResult holds the complete output of an Agentic RAG retrieval.
-type AgenticResult struct {
-	Context  string
-	Verified bool
 }
 
 // Search performs semantic similarity search using chunk-level embeddings.
@@ -162,38 +155,6 @@ func (s *RAGService) BuildContext(novelTitle string, currentChapter int, results
 	}
 
 	return sb.String()
-}
-
-// ---- Agentic RAG ----
-
-const agenticTopK = 10
-
-// AgenticRetrieve performs multi-step retrieval with an ADK agent that
-// autonomously selects data sources (pgvector, Neo4j, full-text) and
-// accumulates context. The agent's final message is the assembled context.
-func (s *RAGService) AgenticRetrieve(ctx context.Context, query string, novelID int64, maxChapter int, novelTitle string) (*AgenticResult, error) {
-	agent, err := newAgenticRAGAgent(ctx, s.chatModel, tools.Deps{
-		NovelID:       novelID,
-		MaxChapter:    maxChapter,
-		SearchFunc:    s.searchSvc.SearchTool(),
-		TimelineFunc:  s.graphReader.TimelineTool(),
-		RelationsFunc: s.graphReader.RelationsTool(),
-		EntityFunc:    s.entitySvc.EntityTool(),
-		ChaptersFunc:  s.searchSvc.ChaptersTool(),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("create agentic rag agent: %w", err)
-	}
-
-	context, err := runAgenticRAG(ctx, agent, query, novelTitle, maxChapter)
-	if err != nil {
-		return nil, fmt.Errorf("run agentic rag: %w", err)
-	}
-
-	return &AgenticResult{
-		Context:  context,
-		Verified: true,
-	}, nil
 }
 
 // convertSearchResults converts SearchResult to model.HybridSearchResult.

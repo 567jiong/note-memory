@@ -90,3 +90,80 @@ func applyRRF(
 	}
 	return results
 }
+
+// applyWeightedRRF merges two pre-ranked query result lists (original + step-back)
+// using weighted Reciprocal Rank Fusion.
+//
+// The original query is weighted higher (typically 1.0) because it directly
+// answers the user's question. The step-back query (typically 0.5) supplements
+// with broader background knowledge.
+//
+// Formula: RRF_score(d) = w_orig/(k + rank_orig(d)) + w_sb/(k + rank_sb(d))
+//
+// If stepbackResults is empty, originalResults is returned as-is.
+func applyWeightedRRF(
+	originalResults []model.HybridSearchResult,
+	originalWeight float64,
+	stepbackResults []model.HybridSearchResult,
+	stepbackWeight float64,
+	k int,
+) []model.HybridSearchResult {
+	// Fast path: no step-back results, return original as-is
+	if len(stepbackResults) == 0 {
+		return originalResults
+	}
+
+	// Build rank maps (1-indexed)
+	origRank := make(map[int64]int, len(originalResults))
+	for i, r := range originalResults {
+		origRank[r.Chapter.ID] = i + 1
+	}
+	sbRank := make(map[int64]int, len(stepbackResults))
+	for i, r := range stepbackResults {
+		sbRank[r.Chapter.ID] = i + 1
+	}
+
+	// Build chapter lookup: prefer the richer result when both contain the same chapter
+	chapterByID := make(map[int64]model.Chapter, len(originalResults)+len(stepbackResults))
+	for _, r := range originalResults {
+		chapterByID[r.Chapter.ID] = r.Chapter
+	}
+	for _, r := range stepbackResults {
+		if _, ok := chapterByID[r.Chapter.ID]; !ok {
+			chapterByID[r.Chapter.ID] = r.Chapter
+		}
+	}
+
+	// Compute weighted RRF scores for the union
+	kf := float64(k)
+	type weightedEntry struct {
+		chapterID int64
+		rrfScore  float64
+	}
+	entries := make([]weightedEntry, 0, len(chapterByID))
+	for chID := range chapterByID {
+		var score float64
+		if rank, ok := origRank[chID]; ok {
+			score += originalWeight / (kf + float64(rank))
+		}
+		if rank, ok := sbRank[chID]; ok {
+			score += stepbackWeight / (kf + float64(rank))
+		}
+		entries = append(entries, weightedEntry{chapterID: chID, rrfScore: score})
+	}
+
+	// Sort by weighted RRF score descending
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].rrfScore > entries[j].rrfScore
+	})
+
+	// Convert to HybridSearchResult
+	results := make([]model.HybridSearchResult, 0, len(entries))
+	for _, e := range entries {
+		results = append(results, model.HybridSearchResult{
+			Chapter:    chapterByID[e.chapterID],
+			FinalScore: e.rrfScore,
+		})
+	}
+	return results
+}

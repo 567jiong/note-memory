@@ -49,17 +49,6 @@ type ReadingProgress struct {
 
 func (ReadingProgress) TableName() string { return "reading_progress" }
 
-// Recap stores a generated recap for a specific novel + progress point.
-type Recap struct {
-	ID             int64     `json:"id" gorm:"primaryKey;autoIncrement"`
-	NovelID        int64     `json:"novel_id" gorm:"uniqueIndex:idx_recap_novel_chapter"`
-	CurrentChapter int       `json:"current_chapter" gorm:"uniqueIndex:idx_recap_novel_chapter"`
-	RecapContent   string    `json:"recap_content" gorm:"type:text;not null"`
-	CreatedAt      time.Time `json:"created_at"`
-}
-
-func (Recap) TableName() string { return "recaps" }
-
 // QACache stores cached Q&A results for a specific novel + progress.
 type QACache struct {
 	ID             int64     `json:"id" gorm:"primaryKey;autoIncrement"`

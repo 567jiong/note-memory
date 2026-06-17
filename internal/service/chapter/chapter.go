@@ -24,20 +24,18 @@ type Service struct {
 	novelRepo   *repository.NovelRepo
 	chatModel   einomodel.ToolCallingChatModel
 	embedder    embedding.Embedder
-	ragSvc      *search.RAGService
 	searchSvc   *search.Service
 	graphWriter *graph.GraphWriter
 	entitySvc   *entity.Service
 	concurrency int
 }
 
-func NewService(chapterRepo *repository.ChapterRepo, novelRepo *repository.NovelRepo, chatModel einomodel.ToolCallingChatModel, embedder embedding.Embedder, ragSvc *search.RAGService, searchSvc *search.Service, graphWriter *graph.GraphWriter, entitySvc *entity.Service) *Service {
+func NewService(chapterRepo *repository.ChapterRepo, novelRepo *repository.NovelRepo, chatModel einomodel.ToolCallingChatModel, embedder embedding.Embedder, searchSvc *search.Service, graphWriter *graph.GraphWriter, entitySvc *entity.Service) *Service {
 	return &Service{
 		chapterRepo: chapterRepo,
 		novelRepo:   novelRepo,
 		chatModel:   chatModel,
 		embedder:    embedder,
-		ragSvc:      ragSvc,
 		searchSvc:   searchSvc,
 		graphWriter: graphWriter,
 		entitySvc:   entitySvc,
