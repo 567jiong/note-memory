@@ -4,8 +4,8 @@
 *.dll
 *.so
 *.dylib
-note-memory
-server
+/note-memory
+/server
 
 # Environment
 .env
