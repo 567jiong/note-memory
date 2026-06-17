@@ -70,6 +70,11 @@ func (s *PostgresStore) DeleteSession(ctx context.Context, sessionID string) err
 	return s.db.WithContext(ctx).Where("id = ?", sessionID).Delete(&chatSession{}).Error
 }
 
+func (s *PostgresStore) UpdateTitle(ctx context.Context, sessionID string, title string) error {
+	return s.db.WithContext(ctx).Model(&chatSession{}).Where("id = ?", sessionID).
+		Updates(map[string]any{"title": title, "updated_at": time.Now()}).Error
+}
+
 // ---- Message storage ----
 
 func (s *PostgresStore) ReadMessages(ctx context.Context, sessionID string) ([]*schema.Message, error) {

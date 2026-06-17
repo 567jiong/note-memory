@@ -62,7 +62,7 @@ func (m *ChatSessionManager) LoadFullHistory(ctx context.Context, sessionID stri
 }
 
 // AppendTurn appends this turn's messages to the full session history and saves.
-// The store always keeps the complete history; LoadHistory applies the window on read.
+// On the first turn, auto-generates a title from the first user message.
 func (m *ChatSessionManager) AppendTurn(ctx context.Context, sessionID string, turnMsgs []*schema.Message) error {
 	if len(turnMsgs) == 0 {
 		return nil
@@ -71,6 +71,26 @@ func (m *ChatSessionManager) AppendTurn(ctx context.Context, sessionID string, t
 	if err != nil {
 		return err
 	}
+
+	// Auto-title on first turn
+	if len(existing) == 0 {
+		for _, msg := range turnMsgs {
+			if msg.Role == schema.User && msg.Content != "" {
+				title := truncateTitle(msg.Content, 20)
+				_ = m.store.UpdateTitle(ctx, sessionID, title)
+				break
+			}
+		}
+	}
+
 	allMsgs := append(existing, turnMsgs...)
 	return m.store.WriteMessages(ctx, sessionID, allMsgs)
+}
+
+func truncateTitle(s string, maxRunes int) string {
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	return string(runes[:maxRunes]) + "…"
 }

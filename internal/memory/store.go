@@ -25,6 +25,7 @@ type ChatHistoryStore interface {
 	GetSession(ctx context.Context, sessionID string) (*SessionInfo, error)
 	ListSessions(ctx context.Context, novelID int64) ([]SessionInfo, error)
 	DeleteSession(ctx context.Context, sessionID string) error
+	UpdateTitle(ctx context.Context, sessionID string, title string) error
 
 	// Message storage (gob-encoded []*schema.Message)
 	ReadMessages(ctx context.Context, sessionID string) ([]*schema.Message, error)
