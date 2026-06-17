@@ -10,6 +10,7 @@ import (
 	"note-memory/internal/service/tools"
 
 	einomodel "github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/schema"
 )
 
 // Service handles spoiler-free question answering via the Reading Memory ADK agent.
@@ -77,18 +78,35 @@ func (s *Service) buildAgentConfig(novelID int64) (readingAgentConfig, string, i
 	return cfg, novelTitle, maxChapter, nil
 }
 
+// ChatResult holds the output of a chat turn.
+type ChatResult struct {
+	Answer   string             // final answer text
+	Messages []*schema.Message  // messages produced this turn (user + tool calls + tool results + assistant)
+}
+
 // AskQuestion answers a user question via the Eino ADK Reading Memory Agent with streaming.
 // Each StreamEvent is pushed through onEvent as the agent runs, enabling SSE delivery.
 // Returns the final assembled answer for caching/logging purposes.
 func (s *Service) AskQuestion(ctx context.Context, novelID int64, question string, onEvent func(StreamEvent)) (string, error) {
-	cfg, novelTitle, maxChapter, err := s.buildAgentConfig(novelID)
+	result, err := s.AskQuestionWithHistory(ctx, novelID, nil, question, onEvent)
 	if err != nil {
 		return "", err
+	}
+	return result.Answer, nil
+}
+
+// AskQuestionWithHistory runs the agent with conversation history, returning both
+// the final answer and all produced messages for memory storage.
+// history should NOT include system messages (they are injected at runtime).
+func (s *Service) AskQuestionWithHistory(ctx context.Context, novelID int64, history []*schema.Message, question string, onEvent func(StreamEvent)) (*ChatResult, error) {
+	cfg, novelTitle, maxChapter, err := s.buildAgentConfig(novelID)
+	if err != nil {
+		return nil, err
 	}
 
 	readingAgent, err := newReadingAgent(ctx, cfg)
 	if err != nil {
-		return "", fmt.Errorf("create agent: %w", err)
+		return nil, fmt.Errorf("create agent: %w", err)
 	}
-	return runReadingAgentStream(ctx, readingAgent, novelTitle, maxChapter, question, onEvent)
+	return runReadingAgentStreamWithHistory(ctx, readingAgent, novelTitle, maxChapter, history, question, onEvent)
 }

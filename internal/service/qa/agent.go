@@ -456,3 +456,168 @@ func runReadingAgentStream(ctx context.Context, agent adk.Agent, novelTitle stri
 	onEvent(StreamEvent{Type: "done", Content: fullAnswer})
 	return fullAnswer, nil
 }
+
+// runReadingAgentStreamWithHistory is like runReadingAgentStream but accepts
+// conversation history (without system messages) and collects all produced
+// messages for memory storage.
+func runReadingAgentStreamWithHistory(ctx context.Context, agent adk.Agent, novelTitle string, maxChapter int, history []*schema.Message, question string, onEvent func(StreamEvent)) (*ChatResult, error) {
+	runner := adk.NewRunner(ctx, adk.RunnerConfig{
+		Agent:           agent,
+		EnableStreaming: true,
+	})
+
+	// Build input: system message + history + new user question
+	input := []*schema.Message{
+		schema.SystemMessage(fmt.Sprintf(
+			"当前小说：《%s》。用户阅读进度：第 1~%d 章。绝对不能引用第 %d 章及以后的内容。",
+			novelTitle, maxChapter, maxChapter+1,
+		)),
+	}
+	input = append(input, history...)
+	input = append(input, schema.UserMessage(question))
+
+	// Track produced messages for storage (user question + all agent/tool messages)
+	produced := []*schema.Message{schema.UserMessage(question)}
+
+	log.Println("[QA-Stream-H] ═══════════════════════════════════════════")
+	log.Printf("[QA-Stream-H] 📝 用户问题: %s", question)
+	log.Printf("[QA-Stream-H] 📖 小说: 《%s》 | 历史: %d 条 | 进度: 第 %d 章", novelTitle, len(history), maxChapter)
+	log.Println("[QA-Stream-H] ═══════════════════════════════════════════")
+
+	iter := runner.Run(ctx, input)
+	var fullAnswer string
+	stepNum := 0
+
+	for {
+		event, ok := iter.Next()
+		if !ok {
+			break
+		}
+		if event.Err != nil {
+			log.Printf("[QA-Stream-H] ❌ Agent 运行错误: %v", event.Err)
+			onEvent(StreamEvent{Type: "error", Content: event.Err.Error()})
+			return nil, fmt.Errorf("agent run error: %w", event.Err)
+		}
+
+		mo := event.Output.MessageOutput
+		if mo == nil {
+			continue
+		}
+
+		if mo.IsStreaming && mo.Role == schema.Assistant {
+			sr := mo.MessageStream
+			if sr == nil {
+				continue
+			}
+
+			var sb strings.Builder
+			tcMap := make(map[int]*schema.ToolCall)
+			var maxIdx int = -1
+
+			for {
+				chunk, err := sr.Recv()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					log.Printf("[QA-Stream-H] ⚠️ 读取流块失败: %v", err)
+					break
+				}
+
+				if chunk.ReasoningContent != "" {
+					onEvent(StreamEvent{Type: "thinking", Content: chunk.ReasoningContent})
+				}
+
+				for _, tc := range chunk.ToolCalls {
+					var idx int
+					if tc.Index != nil {
+						idx = *tc.Index
+					}
+					if idx > maxIdx {
+						maxIdx = idx
+					}
+					if existing, ok := tcMap[idx]; ok {
+						if tc.ID != "" {
+							existing.ID = tc.ID
+						}
+						if tc.Type != "" {
+							existing.Type = tc.Type
+						}
+						if tc.Function.Name != "" {
+							existing.Function.Name = tc.Function.Name
+						}
+						existing.Function.Arguments += tc.Function.Arguments
+					} else {
+						cp := tc
+						tcMap[idx] = &cp
+					}
+				}
+
+				if chunk.Content != "" {
+					sb.WriteString(chunk.Content)
+					onEvent(StreamEvent{Type: "delta", Content: chunk.Content})
+				}
+			}
+
+			if len(tcMap) > 0 {
+				stepNum++
+				// Collect tool call messages
+				toolCalls := make([]schema.ToolCall, 0, len(tcMap))
+				for i := 0; i <= maxIdx; i++ {
+					if tc, ok := tcMap[i]; ok {
+						toolCalls = append(toolCalls, *tc)
+					}
+				}
+				produced = append(produced, &schema.Message{
+					Role:      schema.Assistant,
+					ToolCalls: toolCalls,
+				})
+			} else {
+					answerText := sb.String()
+					fullAnswer += answerText
+					produced = append(produced, &schema.Message{
+						Role:    schema.Assistant,
+						Content: answerText,
+					})
+			}
+
+		} else if !mo.IsStreaming {
+			msg, _, err := adk.GetMessage(event)
+			if err != nil {
+				continue
+			}
+			if msg == nil {
+				continue
+			}
+
+			switch msg.Role {
+			case schema.Assistant:
+				if len(msg.ToolCalls) > 0 {
+					stepNum++
+					produced = append(produced, msg)
+				}
+				if msg.Content != "" {
+					onEvent(StreamEvent{Type: "delta", Content: msg.Content})
+					if len(msg.ToolCalls) == 0 {
+						fullAnswer += msg.Content
+						produced = append(produced, msg)
+					}
+				}
+
+			case schema.Tool:
+				produced = append(produced, msg)
+			}
+		}
+	}
+
+	log.Println("[QA-Stream-H] ═══════════════════════════════════════════")
+
+	if fullAnswer == "" {
+		log.Println("[QA-Stream-H] ❌ Agent 未产生任何回答")
+		onEvent(StreamEvent{Type: "error", Content: "agent produced no answer"})
+		return nil, fmt.Errorf("agent produced no answer")
+	}
+
+	onEvent(StreamEvent{Type: "done", Content: fullAnswer})
+	return &ChatResult{Answer: fullAnswer, Messages: produced}, nil
+}

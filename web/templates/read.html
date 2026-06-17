@@ -131,11 +131,15 @@
         <div class="flex items-center justify-between px-4 py-3 border-b bg-gray-50 flex-shrink-0">
             <div class="flex items-center gap-2">
                 <span class="text-lg">🤖</span>
-                <h3 class="text-sm font-semibold text-gray-700">AI 助手</h3>
-                <span class="text-xs text-gray-400">边看边问</span>
+                <select id="session-selector" onchange="switchSession(this.value)" class="text-sm font-semibold text-gray-700 bg-transparent border-none cursor-pointer max-w-[140px] truncate focus:outline-none">
+                    <option value="">新建聊天...</option>
+                </select>
+                <button onclick="createNewSession()" title="新建聊天" class="text-gray-400 hover:text-blue-500 p-1 rounded transition">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                </button>
             </div>
             <div class="flex items-center gap-1">
-                <button onclick="clearChat()" title="清空对话" class="text-gray-400 hover:text-gray-600 p-1 rounded transition">
+                <button onclick="deleteCurrentSession()" title="删除当前聊天" class="text-gray-400 hover:text-red-500 p-1 rounded transition">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
                 </button>
                 <button onclick="toggleAgentPanel()" title="收起面板" class="text-gray-400 hover:text-gray-600 p-1 rounded transition">
@@ -362,6 +366,78 @@ function trackProgress(chNum) {
 }
 
 // ============================================================
+// Session Management
+// ============================================================
+var currentSessionId = '';
+
+async function loadSessions() {
+    try {
+        var resp = await fetch('/api/novels/' + novelId + '/sessions');
+        var data = await resp.json();
+        var sel = document.getElementById('session-selector');
+        sel.innerHTML = '<option value="">+ 新建聊天...</option>';
+        if (data.sessions) {
+            data.sessions.forEach(function(s) {
+                var title = s.title || ('聊天 ' + s.id.substring(0, 8));
+                var selected = s.id === currentSessionId ? ' selected' : '';
+                sel.innerHTML += '<option value="' + s.id + '"' + selected + '>' + escapeHtml(title) + '</option>';
+            });
+        }
+    } catch (err) { console.error('Load sessions:', err); }
+}
+
+async function createNewSession() {
+    try {
+        var resp = await fetch('/api/novels/' + novelId + '/sessions', {
+            method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'
+        });
+        var data = await resp.json();
+        if (resp.ok && data.session) {
+            await loadSessions();
+            switchSession(data.session.id);
+        }
+    } catch (err) { console.error(err); }
+}
+
+async function switchSession(sid) {
+    if (!sid) { createNewSession(); return; }
+    currentSessionId = sid;
+    var msgs = document.getElementById('qa-messages');
+    var empty = document.getElementById('qa-empty');
+    msgs.innerHTML = '<div class="text-center text-gray-300 text-sm py-4">加载中...</div>';
+
+    try {
+        var resp = await fetch('/api/novels/' + novelId + '/sessions/' + sid + '/messages');
+        var data = await resp.json();
+        msgs.innerHTML = '';
+        if (data.messages && data.messages.length > 0) {
+            if (empty) empty.classList.add('hidden');
+            data.messages.forEach(function(m) {
+                if (m.role === 'user') appendMessage('user', m.content);
+                else if (m.role === 'assistant' && m.content) appendMessage('assistant', m.content);
+            });
+        } else {
+            msgs.innerHTML = '<div class="text-center text-gray-300 text-sm py-8" id="qa-empty"><p class="text-3xl mb-2">💬</p><p>开始新的对话</p></div>';
+        }
+        msgs.scrollTop = msgs.scrollHeight;
+    } catch (err) {
+        msgs.innerHTML = '<div class="text-center text-gray-400 text-sm py-4">加载失败</div>';
+    }
+    loadSessions();
+}
+
+async function deleteCurrentSession() {
+    if (!currentSessionId) return;
+    if (!confirm('确定删除当前聊天？')) return;
+    try {
+        await fetch('/api/novels/' + novelId + '/sessions/' + currentSessionId, { method: 'DELETE' });
+        currentSessionId = '';
+        document.getElementById('qa-messages').innerHTML = '<div class="text-center text-gray-300 text-sm py-8" id="qa-empty"><p class="text-3xl mb-2">💬</p><p>阅读中遇到疑问？</p><p class="text-xs mt-1">在下方输入问题，AI 帮你回忆剧情</p></div>';
+        await loadSessions();
+    } catch (err) { console.error(err); }
+}
+
+// ============================================================
 // AI Agent Panel
 // ============================================================
 function toggleAgentPanel() {
@@ -371,14 +447,12 @@ function toggleAgentPanel() {
     var handle = document.getElementById('resize-handle');
 
     if (panel.classList.contains('collapsed')) {
-        // Expand
         panel.classList.remove('collapsed');
         panel.style.width = localStorage.getItem('panel_width_' + novelId) || '384px';
         toggle.classList.add('hidden-btn');
         handle.style.display = '';
         icon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>';
     } else {
-        // Collapse
         savePanelWidth();
         panel.classList.add('collapsed');
         toggle.classList.remove('hidden-btn');
@@ -393,6 +467,9 @@ function collapseAgentPanel() {
 }
 
 async function askQuestion() {
+    if (!currentSessionId) { await createNewSession(); }
+    if (!currentSessionId) return;
+
     var input = document.getElementById('qa-input');
     var q = input.value.trim();
     if (!q || isStreaming) return;
@@ -425,12 +502,11 @@ async function askQuestion() {
     // Accumulate answer
     var fullAnswer = '';
     var contentEl = aiDiv.querySelector('.msg-content');
-    var firstChunk = true;
 
     abortController = new AbortController();
 
     try {
-        var resp = await fetch('/api/novels/' + novelId + '/ask', {
+        var resp = await fetch('/api/novels/' + novelId + '/sessions/' + currentSessionId + '/ask', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({question: q}),
@@ -451,7 +527,7 @@ async function askQuestion() {
 
             buffer += decoder.decode(result.value, {stream: true});
             var lines = buffer.split('\n');
-            buffer = lines.pop(); // keep incomplete line
+            buffer = lines.pop();
 
             for (var i = 0; i < lines.length; i++) {
                 var line = lines[i].trim();
@@ -462,7 +538,6 @@ async function askQuestion() {
 
                 if (line.startsWith('event:')) {
                     eventType = line.substring(6).trim();
-                    // Next line should be data
                     if (i + 1 < lines.length && lines[i + 1].trim().startsWith('data:')) {
                         eventData = lines[i + 1].trim().substring(5).trim();
                         i++;
@@ -497,11 +572,6 @@ async function askQuestion() {
     isStreaming = false;
     abortController = null;
     msgs.scrollTop = msgs.scrollHeight;
-
-    // Save to history
-    if (fullAnswer) {
-        saveChatHistory(q, fullAnswer);
-    }
 }
 
 function handleStreamEvent(evt, contentEl, msgId, rawType) {
@@ -625,49 +695,11 @@ function autoResizeInput(el) {
     el.style.height = Math.min(el.scrollHeight, 120) + 'px';
 }
 
-function clearChat() {
-    if (isStreaming) return;
-    if (!confirm('确定清空当前对话记录？')) return;
-    document.getElementById('qa-messages').innerHTML = '<div class="text-center text-gray-300 text-sm py-8" id="qa-empty"><p class="text-3xl mb-2">💬</p><p>阅读中遇到疑问？</p><p class="text-xs mt-1">在下方输入问题，AI 帮你回忆剧情</p></div>';
-    try { localStorage.removeItem('chat_' + novelId); } catch(e) {}
-}
-
 // ============================================================
-// Chat History (localStorage)
+// Chat History (server sessions)
 // ============================================================
 function loadChatHistory() {
-    try {
-        var raw = localStorage.getItem('chat_' + novelId);
-        if (!raw) return;
-        var history = JSON.parse(raw);
-        if (!history || !history.length) return;
-
-        var empty = document.getElementById('qa-empty');
-        if (empty) empty.classList.add('hidden');
-
-        var msgs = document.getElementById('qa-messages');
-        history.forEach(function(item) {
-            appendMessage('user', item.q);
-            var div = document.createElement('div');
-            div.className = 'flex justify-start';
-            div.innerHTML = '<div class="bg-gray-50 rounded-lg px-4 py-2 text-sm max-w-[90%] msg-content">' + formatMsgContent(item.a) + '</div>';
-            msgs.appendChild(div);
-            makeChapterRefsClickable(div.querySelector('.msg-content'));
-        });
-        msgs.scrollTop = msgs.scrollHeight;
-    } catch(e) {}
-}
-
-function saveChatHistory(q, a) {
-    try {
-        var key = 'chat_' + novelId;
-        var raw = localStorage.getItem(key);
-        var history = raw ? JSON.parse(raw) : [];
-        history.push({q: q, a: a, time: Date.now()});
-        // Keep only last 50 entries
-        if (history.length > 50) history = history.slice(-50);
-        localStorage.setItem(key, JSON.stringify(history));
-    } catch(e) {}
+    loadSessions();
 }
 
 // ============================================================

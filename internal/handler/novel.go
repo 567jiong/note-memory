@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"note-memory/internal/memory"
 	"note-memory/internal/model"
 	"note-memory/internal/service/novel"
 	"note-memory/internal/service/qa"
@@ -14,17 +15,19 @@ import (
 )
 
 type NovelHandler struct {
-	novelSvc  *novel.Service
-	qaSvc     *qa.Service
-	searchSvc *search.Service
+	novelSvc   *novel.Service
+	qaSvc      *qa.Service
+	searchSvc  *search.Service
+	sessionMgr *memory.ChatSessionManager
 }
 
 func NewNovelHandler(
 	novelSvc *novel.Service,
 	qaSvc *qa.Service,
 	searchSvc *search.Service,
+	sessionMgr *memory.ChatSessionManager,
 ) *NovelHandler {
-	return &NovelHandler{novelSvc: novelSvc, qaSvc: qaSvc, searchSvc: searchSvc}
+	return &NovelHandler{novelSvc: novelSvc, qaSvc: qaSvc, searchSvc: searchSvc, sessionMgr: sessionMgr}
 }
 
 // Upload handles TXT file upload.
