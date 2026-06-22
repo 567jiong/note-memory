@@ -108,6 +108,15 @@ func (r *ChapterRepo) ListUnprocessed(novelID int64, limit int) ([]model.Chapter
 	return chapters, err
 }
 
+// CountUnprocessed returns the number of chapters that still need AI summarization.
+func (r *ChapterRepo) CountUnprocessed(novelID int64) (int, error) {
+	var count int64
+	err := r.db.Model(&model.Chapter{}).
+		Where("novel_id = ? AND summary = ''", novelID).
+		Count(&count).Error
+	return int(count), err
+}
+
 // FullTextSearch performs pure tsvector full-text search (no embedding required).
 // Used as fallback when embeddings are unavailable.
 func (r *ChapterRepo) FullTextSearch(novelID int64, maxChapter int, tsQuery string, topK int) ([]model.HybridSearchResult, error) {

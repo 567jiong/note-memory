@@ -12,6 +12,8 @@ import (
 	"note-memory/internal/service/search"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/cloudwego/eino/components/embedding"
 	einomodel "github.com/cloudwego/eino/components/model"
@@ -44,16 +46,45 @@ func NewService(chapterRepo *repository.ChapterRepo, novelRepo *repository.Novel
 }
 
 // ParseAllChapters summarizes all unprocessed chapters for a novel.
+// Processes chapters concurrently and logs progress at each step.
 func (s *Service) ParseAllChapters(ctx context.Context, novelID int64) {
+	// Get novel for total chapter count
+	novel, err := s.novelRepo.GetByID(novelID)
+	if err != nil {
+		log.Printf("[chapter] ❌ 获取小说信息失败 novel=%d: %v", novelID, err)
+		return
+	}
+	totalChapters := novel.TotalChapters
+
+	// Count already processed chapters to calculate starting point
+	processedCount := totalChapters
+	remaining, _ := s.chapterRepo.CountUnprocessed(novelID)
+	if remaining >= 0 {
+		processedCount = totalChapters - remaining
+	}
+
+	log.Printf("[chapter] ═══════════════════════════════════════════")
+	log.Printf("[chapter] 📖 开始解析小说《%s》(ID=%d)", novel.Title, novelID)
+	log.Printf("[chapter]    总章节: %d | 已处理: %d | 待处理: %d | 并发: %d",
+		totalChapters, processedCount, remaining, s.concurrency)
+	log.Printf("[chapter] ═══════════════════════════════════════════")
+
+	var completed int64
+	startTime := time.Now()
+	lastLog := time.Now()
+
 	for {
 		chapters, err := s.chapterRepo.ListUnprocessed(novelID, s.concurrency)
 		if err != nil {
-			log.Printf("[chapter] error listing unprocessed: %v", err)
+			log.Printf("[chapter] ❌ 查询待处理章节失败: %v", err)
 			return
 		}
 		if len(chapters) == 0 {
-			// log.Printf("[chapter] novel %d: all summaries done, backfilling chunk embeddings...", novelID)
-			// s.FillChunkEmbeddings(ctx, novelID)
+			elapsed := time.Since(startTime).Round(time.Second)
+			log.Printf("[chapter] ═══════════════════════════════════════════")
+			log.Printf("[chapter] ✅ 《%s》全部章节处理完成！共 %d 章，耗时 %s",
+				novel.Title, totalChapters, elapsed)
+			log.Printf("[chapter] ═══════════════════════════════════════════")
 			return
 		}
 
@@ -68,6 +99,21 @@ func (s *Service) ParseAllChapters(ctx context.Context, novelID int64) {
 				defer wg.Done()
 				defer func() { <-sem }()
 				s.summarizeChapter(ctx, &c)
+
+				// Progress: log every 5% or every 30 seconds
+				done := atomic.AddInt64(&completed, 1)
+				currentTotal := processedCount + int(done)
+				pct := float64(currentTotal) / float64(totalChapters) * 100
+				if int(pct)%5 == 0 || time.Since(lastLog) > 30*time.Second {
+					elapsed := time.Since(startTime).Round(time.Second)
+					eta := time.Duration(0)
+					if done > 0 {
+						eta = time.Duration(float64(elapsed)/float64(done)*float64(int64(remaining)-done)) * time.Nanosecond
+					}
+					log.Printf("[chapter] 📊 进度: %d/%d (%.0f%%) | 耗时: %s | 预计剩余: %s",
+						currentTotal, totalChapters, pct, elapsed, eta.Round(time.Second))
+					lastLog = time.Now()
+				}
 			}(ch)
 		}
 		wg.Wait()
@@ -76,16 +122,21 @@ func (s *Service) ParseAllChapters(ctx context.Context, novelID int64) {
 
 // summarizeChapter sends a chapter to AI for summarization, then chunks the content
 // and generates chunk-level embeddings for semantic search.
+// Each major step is logged with timing for visibility into the processing pipeline.
 func (s *Service) summarizeChapter(ctx context.Context, ch *model.Chapter) {
+	tStart := time.Now()
+
+	// ── Step 1: AI summary ──
+	t0 := time.Now()
 	sr, err := newSummarizerAgent(ctx, s.chatModel)
 	if err != nil {
-		log.Printf("[chapter] create summarizer agent error for novel %d chapter %d: %v", ch.NovelID, ch.ChapterNumber, err)
+		log.Printf("[chapter] ❌ 第%d章 创建摘要Agent失败: %v", ch.ChapterNumber, err)
 		return
 	}
 
 	resp, err := runSummarizer(ctx, sr, ch.Title, ch.Content)
 	if err != nil {
-		log.Printf("[chapter] AI summarize error for novel %d chapter %d: %v", ch.NovelID, ch.ChapterNumber, err)
+		log.Printf("[chapter] ❌ 第%d章 AI摘要失败: %v", ch.ChapterNumber, err)
 		return
 	}
 
@@ -97,39 +148,55 @@ func (s *Service) summarizeChapter(ctx context.Context, ch *model.Chapter) {
 	techniquesJSON, _ := model.MarshalTechniques(techniquesParsed)
 
 	if err := s.chapterRepo.UpdateSummary(ch.ID, summary, chars, events, relationsJSON, techniquesJSON); err != nil {
-		log.Printf("[chapter] update summary error: %v", err)
+		log.Printf("[chapter] ❌ 第%d章 保存摘要失败: %v", ch.ChapterNumber, err)
 		return
 	}
 
-	// Update full-text search index
+	log.Printf("[chapter]   ├─ 第%d章 AI摘要完成 (角色:%d 事件:%d 关系:%d 功法:%d) [%v]",
+		ch.ChapterNumber, len(charsParsed), len(eventsParsed), len(relationsParsed), len(techniquesParsed),
+		time.Since(t0).Round(time.Millisecond))
+
+	// ── Step 2: Full-text search index ──
+	t0 = time.Now()
 	if err := s.searchSvc.UpdateSearchIndex(ch.ID, ch.NovelID, ch.Title, summary, charsParsed, eventsParsed); err != nil {
-		log.Printf("[chapter] search index error for chapter %d: %v", ch.ChapterNumber, err)
+		log.Printf("[chapter]   ├─ 第%d章 全文索引失败: %v", ch.ChapterNumber, err)
+	} else {
+		log.Printf("[chapter]   ├─ 第%d章 全文索引完成 [%v]", ch.ChapterNumber, time.Since(t0).Round(time.Millisecond))
 	}
 
-	// Chunk content into overlapping segments and generate chunk embeddings
+	// ── Step 3: Chunk + embedding ──
+	t0 = time.Now()
 	s.chunkAndEmbedChapter(ctx, ch)
+	log.Printf("[chapter]   ├─ 第%d章 分块+向量嵌入 (%d 块) [%v]",
+		ch.ChapterNumber, countChunks(ch.Content), time.Since(t0).Round(time.Millisecond))
 
-	// Sync to Neo4j knowledge graph
+	// ── Step 4: Neo4j knowledge graph ──
 	if s.graphWriter != nil && s.graphWriter.IsEnabled() {
+		t0 = time.Now()
 		novel, err := s.novelRepo.GetByID(ch.NovelID)
 		if err != nil {
-			log.Printf("[chapter] graph sync: get novel %d: %v", ch.NovelID, err)
+			log.Printf("[chapter]   ├─ 第%d章 图谱同步: 获取小说失败: %v", ch.ChapterNumber, err)
 		} else if err := s.graphWriter.SyncChapter(ctx, novel, ch, charsParsed, eventsParsed, relationsParsed, techniquesParsed); err != nil {
-			log.Printf("[chapter] graph sync error for chapter %d: %v", ch.ChapterNumber, err)
+			log.Printf("[chapter]   ├─ 第%d章 图谱同步失败: %v", ch.ChapterNumber, err)
+		} else {
+			log.Printf("[chapter]   ├─ 第%d章 图谱同步完成 [%v]", ch.ChapterNumber, time.Since(t0).Round(time.Millisecond))
 		}
 	}
 
-	// Generate/update entity embeddings for semantic alias matching
-	if s.entitySvc != nil {
+	// ── Step 5: Entity embeddings ──
+	if s.entitySvc != nil && len(charsParsed) > 0 {
+		t0 = time.Now()
 		for _, c := range charsParsed {
 			if err := s.entitySvc.UpsertEntityFromChapter(ctx, ch.NovelID, c); err != nil {
-				log.Printf("[chapter] entity embedding error for %s: %v", c.Name, err)
+				log.Printf("[chapter]   ├─ 第%d章 实体嵌入(%s)失败: %v", ch.ChapterNumber, c.Name, err)
 			}
 		}
+		log.Printf("[chapter]   ├─ 第%d章 实体嵌入完成 (%d个角色) [%v]",
+			ch.ChapterNumber, len(charsParsed), time.Since(t0).Round(time.Millisecond))
 	}
 
-	log.Printf("[chapter] novel %d chapter %d: summary + search index + alias + %d chunks done",
-		ch.NovelID, ch.ChapterNumber, countChunks(ch.Content))
+	log.Printf("[chapter]   └─ 第%d章 ✅ 全部完成 (总耗时: %v)",
+		ch.ChapterNumber, time.Since(tStart).Round(time.Millisecond))
 }
 
 // chunkAndEmbedChapter splits chapter content into overlapping chunks and generates embeddings.
