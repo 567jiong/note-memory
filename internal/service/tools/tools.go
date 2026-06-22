@@ -2,7 +2,10 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/components/tool/utils"
@@ -40,6 +43,63 @@ type Deps struct {
 	// EventsFunc queries events a character participated in from Neo4j (max 20, newest first).
 	EventsFunc func(ctx context.Context, novelID int64, charName string, maxChapter int) (string, error)
 }
+
+// ── Timeout configuration (per-tool) ──────────────────────────────────────────
+
+var toolTimeouts = map[string]time.Duration{
+	"search_chapters":      15 * time.Second, // embedding API + pgvector + full-text + optional reranker
+	"resolve_entity":       10 * time.Second, // embedding API
+	"query_timeline":        5 * time.Second, // Neo4j — simple traversal
+	"query_relations":       8 * time.Second, // Neo4j — graph traversal with OPTIONAL MATCH
+	"get_chapters":          3 * time.Second, // pure PostgreSQL
+	"query_techniques":      8 * time.Second, // Neo4j — OPTIONAL MATCH
+	"query_all_techniques":  8 * time.Second, // Neo4j — larger result set
+	"query_events":          5 * time.Second, // Neo4j — LIMIT 20, newest first
+}
+
+// withToolTimeout derives a context with the per-tool deadline. Falls back to 10 s.
+func withToolTimeout(ctx context.Context, toolName string) (context.Context, context.CancelFunc) {
+	d, ok := toolTimeouts[toolName]
+	if !ok {
+		d = 10 * time.Second
+	}
+	return context.WithTimeout(ctx, d)
+}
+
+// ── Error formatting (JSON → LLM can read & decide next step) ────────────────
+
+// toolErrJSON builds a JSON error object that is returned as the tool result
+// (NOT as a Go error). The LLM sees this JSON in the next ReAct turn and can
+// decide to retry with different parameters, switch tools, or tell the user.
+func toolErrJSON(toolName string, err error, suggestion string) string {
+	msg := map[string]string{
+		"error": fmt.Sprintf("[%s] %v", toolName, err),
+		"tool":  toolName,
+	}
+	if suggestion != "" {
+		msg["suggestion"] = suggestion
+	}
+	b, _ := json.Marshal(msg)
+	return string(b)
+}
+
+// timeoutErrJSON returns a JSON error specifically for context deadline exceeded.
+func timeoutErrJSON(toolName string) string {
+	return toolErrJSON(toolName, fmt.Errorf("操作超时"), "请稍后重试，或尝试缩小查询范围、使用其他工具")
+}
+
+// validateNotEmpty checks that a required string field is non-empty.
+// Returns an error message string; empty string means valid.
+func validateNotEmpty(value, fieldName, toolName string) (jsonErr string) {
+	if strings.TrimSpace(value) == "" {
+		return toolErrJSON(toolName,
+			fmt.Errorf("缺少必填参数 %s", fieldName),
+			fmt.Sprintf("请提供有效的 %s 后重试", fieldName))
+	}
+	return ""
+}
+
+// ── Tool set construction ─────────────────────────────────────────────────────
 
 // Build creates the full tool set for a Retrieval / Reading Memory agent.
 // Returns eight tools: search_chapters, resolve_entity, query_timeline, query_relations,
@@ -88,7 +148,7 @@ func Build(deps Deps) ([]tool.BaseTool, error) {
 	return []tool.BaseTool{searchTool, resolveTool, timelineTool, relationsTool, chaptersTool, techniquesTool, allTechniquesTool, eventsTool}, nil
 }
 
-// --- search_chapters ---
+// ── 1. search_chapters ────────────────────────────────────────────────────────
 
 func newSearchChaptersTool(deps Deps) (tool.InvokableTool, error) {
 	return utils.InferTool(
@@ -98,15 +158,35 @@ func newSearchChaptersTool(deps Deps) (tool.InvokableTool, error) {
 			"content 字段包含匹配到的具体原文片段，优先使用。"+
 			"适合查找：剧情细节、事件经过、对话内容。",
 		func(ctx context.Context, input *SearchChaptersInput) (string, error) {
+			// 1. 参数校验
+			if errJSON := validateNotEmpty(input.Query, "query", "search_chapters"); errJSON != "" {
+				return errJSON, nil
+			}
+
+			// 2. 依赖不可用 → 空结果
 			if deps.SearchFunc == nil {
 				return `[]`, nil
 			}
-			return deps.SearchFunc(ctx, input.Query, deps.NovelID, deps.MaxChapter, 10)
+
+			// 3. 加超时
+			ctx, cancel := withToolTimeout(ctx, "search_chapters")
+			defer cancel()
+
+			// 4. 执行 + 错误 → JSON 给 LLM 决策
+			result, err := deps.SearchFunc(ctx, input.Query, deps.NovelID, deps.MaxChapter, 10)
+			if err != nil {
+				if ctx.Err() == context.DeadlineExceeded {
+					return timeoutErrJSON("search_chapters"), nil
+				}
+				return toolErrJSON("search_chapters", err,
+					"请尝试调整搜索关键词、缩小查询范围，或改用 get_chapters 工具"), nil
+			}
+			return result, nil
 		},
 	)
 }
 
-// --- resolve_entity ---
+// ── 2. resolve_entity ─────────────────────────────────────────────────────────
 
 func newResolveEntityTool(deps Deps) (tool.InvokableTool, error) {
 	return utils.InferTool(
@@ -114,15 +194,35 @@ func newResolveEntityTool(deps Deps) (tool.InvokableTool, error) {
 		"通过别名、称号或特征描述查找人物的规范名称。"+
 			"当用户使用的称呼不是规范名时（如'韩跑跑''那个拿掌天瓶的'），必须先调用此工具获取规范名，再用规范名查询关系或时间线。",
 		func(ctx context.Context, input *ResolveEntityInput) (string, error) {
+			// 1. 参数校验
+			if errJSON := validateNotEmpty(input.Description, "description", "resolve_entity"); errJSON != "" {
+				return errJSON, nil
+			}
+
+			// 2. 依赖不可用
 			if deps.EntityFunc == nil {
 				return `{"matched_names":[]}`, nil
 			}
-			return deps.EntityFunc(ctx, input.Description, deps.NovelID, 3)
+
+			// 3. 超时
+			ctx, cancel := withToolTimeout(ctx, "resolve_entity")
+			defer cancel()
+
+			// 4. 执行
+			result, err := deps.EntityFunc(ctx, input.Description, deps.NovelID, 3)
+			if err != nil {
+				if ctx.Err() == context.DeadlineExceeded {
+					return timeoutErrJSON("resolve_entity"), nil
+				}
+				return toolErrJSON("resolve_entity", err,
+					"请尝试用更具体的特征描述，或直接用已知角色名查询其他工具"), nil
+			}
+			return result, nil
 		},
 	)
 }
 
-// --- query_timeline ---
+// ── 3. query_timeline ─────────────────────────────────────────────────────────
 
 func newQueryTimelineTool(deps Deps) (tool.InvokableTool, error) {
 	return utils.InferTool(
@@ -130,15 +230,71 @@ func newQueryTimelineTool(deps Deps) (tool.InvokableTool, error) {
 		"查询人物的修炼境界突破时间线。返回每次突破的章节号和年龄。"+
 			"适合回答：'XXX现在什么境界''XXX什么时候突破的筑基期''XXX的修炼历程'。需要提供规范角色名。",
 		func(ctx context.Context, input *QueryTimelineInput) (string, error) {
+			// 1. 参数校验
+			if errJSON := validateNotEmpty(input.CharacterName, "character_name", "query_timeline"); errJSON != "" {
+				return errJSON, nil
+			}
+
+			// 2. 依赖不可用
 			if deps.TimelineFunc == nil {
 				return `[]`, nil
 			}
-			return deps.TimelineFunc(ctx, deps.NovelID, input.CharacterName, deps.MaxChapter)
+
+			// 3. 超时
+			ctx, cancel := withToolTimeout(ctx, "query_timeline")
+			defer cancel()
+
+			// 4. 执行
+			result, err := deps.TimelineFunc(ctx, deps.NovelID, input.CharacterName, deps.MaxChapter)
+			if err != nil {
+				if ctx.Err() == context.DeadlineExceeded {
+					return timeoutErrJSON("query_timeline"), nil
+				}
+				return toolErrJSON("query_timeline", err,
+					"图谱查询失败，可尝试用 get_chapters 查看章节摘要来推断境界信息"), nil
+			}
+			return result, nil
 		},
 	)
 }
 
-// --- get_chapters ---
+// ── 4. query_relations ────────────────────────────────────────────────────────
+
+func newQueryRelationsTool(deps Deps) (tool.InvokableTool, error) {
+	return utils.InferTool(
+		"query_relations",
+		"查询人物的人际关系网。返回师徒、仇敌、道侣、朋友、宗门归属等关系。"+
+			"适合回答：'XXX和YYY什么关系''XXX有哪些仇敌''XXX的师父是谁'。需要提供规范角色名。",
+		func(ctx context.Context, input *QueryRelationsInput) (string, error) {
+			// 1. 参数校验
+			if errJSON := validateNotEmpty(input.CharacterName, "character_name", "query_relations"); errJSON != "" {
+				return errJSON, nil
+			}
+
+			// 2. 依赖不可用
+			if deps.RelationsFunc == nil {
+				return `[]`, nil
+			}
+
+			// 3. 超时
+			ctx, cancel := withToolTimeout(ctx, "query_relations")
+			defer cancel()
+
+			// 4. 执行
+			result, err := deps.RelationsFunc(ctx, deps.NovelID, input.CharacterName, deps.MaxChapter)
+			if err != nil {
+				if ctx.Err() == context.DeadlineExceeded {
+					return timeoutErrJSON("query_relations"), nil
+				}
+				return toolErrJSON("query_relations", err,
+					"图谱查询失败，可尝试用 search_chapters 搜索角色名来推断关系"), nil
+			}
+			return result, nil
+		},
+	)
+}
+
+// ── 5. get_chapters ───────────────────────────────────────────────────────────
 
 func newGetChaptersTool(deps Deps) (tool.InvokableTool, error) {
 	return utils.InferTool(
@@ -150,12 +306,14 @@ func newGetChaptersTool(deps Deps) (tool.InvokableTool, error) {
 			"3) 传 start 获取单章（如 start=50,end=50）。"+
 			"n 默认 5，最大 20。范围不会超出用户阅读进度。",
 		func(ctx context.Context, input *GetChaptersInput) (string, error) {
+			// 依赖不可用
 			if deps.ChaptersFunc == nil {
 				return `[]`, nil
 			}
+
+			// 参数计算
 			start, end := input.Start, input.End
 			if start <= 0 && end <= 0 {
-				// "recent N" mode
 				n := input.N
 				if n <= 0 {
 					n = 5
@@ -163,39 +321,42 @@ func newGetChaptersTool(deps Deps) (tool.InvokableTool, error) {
 				if n > 20 {
 					n = 20
 				}
-				start = 0 // signal to the func to use "recent N"
+				start = 0
 				end = n
 			} else {
-				// range mode
 				if start <= 0 {
 					start = 1
 				}
 				if end <= 0 {
 					end = start
 				}
+				// 范围校验：不允许超大范围
+				if end-start > 20 {
+					return toolErrJSON("get_chapters",
+						fmt.Errorf("章节范围过大 (start=%d, end=%d, 跨度 %d > 20)", start, end, end-start),
+						"单次最多获取 20 章，请缩小范围后分次查询"), nil
+				}
 			}
-			return deps.ChaptersFunc(ctx, deps.NovelID, start, end, deps.MaxChapter)
+
+			// 超时
+			ctx, cancel := withToolTimeout(ctx, "get_chapters")
+			defer cancel()
+
+			// 执行
+			result, err := deps.ChaptersFunc(ctx, deps.NovelID, start, end, deps.MaxChapter)
+			if err != nil {
+				if ctx.Err() == context.DeadlineExceeded {
+					return timeoutErrJSON("get_chapters"), nil
+				}
+				return toolErrJSON("get_chapters", err,
+					"数据库查询失败，请缩小章节范围后重试"), nil
+			}
+			return result, nil
 		},
 	)
 }
 
-// --- query_relations ---
-
-func newQueryRelationsTool(deps Deps) (tool.InvokableTool, error) {
-	return utils.InferTool(
-		"query_relations",
-		"查询人物的人际关系网。返回师徒、仇敌、道侣、朋友、宗门归属等关系。"+
-			"适合回答：'XXX和YYY什么关系''XXX有哪些仇敌''XXX的师父是谁'。需要提供规范角色名。",
-		func(ctx context.Context, input *QueryRelationsInput) (string, error) {
-			if deps.RelationsFunc == nil {
-				return `[]`, nil
-			}
-			return deps.RelationsFunc(ctx, deps.NovelID, input.CharacterName, deps.MaxChapter)
-		},
-	)
-}
-
-// --- query_techniques ---
+// ── 6. query_techniques ───────────────────────────────────────────────────────
 
 func newQueryTechniquesTool(deps Deps) (tool.InvokableTool, error) {
 	return utils.InferTool(
@@ -204,15 +365,35 @@ func newQueryTechniquesTool(deps Deps) (tool.InvokableTool, error) {
 			"适合回答：'XXX修炼了什么功法''XXX的功法有哪些''无名口诀是什么'类问题。"+
 			"注意：功法（如青元剑诀、无名口诀）不同于修炼境界（如筑基期、元婴期），境界查询请用 query_timeline。需要提供规范角色名。",
 		func(ctx context.Context, input *QueryTechniquesInput) (string, error) {
+			// 1. 参数校验
+			if errJSON := validateNotEmpty(input.CharacterName, "character_name", "query_techniques"); errJSON != "" {
+				return errJSON, nil
+			}
+
+			// 2. 依赖不可用
 			if deps.TechniqueFunc == nil {
 				return `[]`, nil
 			}
-			return deps.TechniqueFunc(ctx, deps.NovelID, input.CharacterName, deps.MaxChapter)
+
+			// 3. 超时
+			ctx, cancel := withToolTimeout(ctx, "query_techniques")
+			defer cancel()
+
+			// 4. 执行
+			result, err := deps.TechniqueFunc(ctx, deps.NovelID, input.CharacterName, deps.MaxChapter)
+			if err != nil {
+				if ctx.Err() == context.DeadlineExceeded {
+					return timeoutErrJSON("query_techniques"), nil
+				}
+				return toolErrJSON("query_techniques", err,
+					"图谱查询失败，可尝试用 search_chapters 搜索功法名"), nil
+			}
+			return result, nil
 		},
 	)
 }
 
-// --- query_all_techniques ---
+// ── 7. query_all_techniques ───────────────────────────────────────────────────
 
 func newQueryAllTechniquesTool(deps Deps) (tool.InvokableTool, error) {
 	return utils.InferTool(
@@ -221,15 +402,30 @@ func newQueryAllTechniquesTool(deps Deps) (tool.InvokableTool, error) {
 			"适合回答：'这本书里有哪些厉害功法''所有剑诀有哪些''有人修炼了什么秘术'类问题。"+
 			"不需要参数。",
 		func(ctx context.Context, _ *QueryAllTechniquesInput) (string, error) {
+			// 依赖不可用
 			if deps.AllTechniquesFunc == nil {
 				return `[]`, nil
 			}
-			return deps.AllTechniquesFunc(ctx, deps.NovelID, deps.MaxChapter)
+
+			// 超时
+			ctx, cancel := withToolTimeout(ctx, "query_all_techniques")
+			defer cancel()
+
+			// 执行
+			result, err := deps.AllTechniquesFunc(ctx, deps.NovelID, deps.MaxChapter)
+			if err != nil {
+				if ctx.Err() == context.DeadlineExceeded {
+					return timeoutErrJSON("query_all_techniques"), nil
+				}
+				return toolErrJSON("query_all_techniques", err,
+					"图谱查询失败，可尝试用 search_chapters 搜索功法相关关键词"), nil
+			}
+			return result, nil
 		},
 	)
 }
 
-// --- query_events ---
+// ── 8. query_events ───────────────────────────────────────────────────────────
 
 func newQueryEventsTool(deps Deps) (tool.InvokableTool, error) {
 	return utils.InferTool(
@@ -238,10 +434,30 @@ func newQueryEventsTool(deps Deps) (tool.InvokableTool, error) {
 			"每条记录包含事件标题、章节号、摘要和参与角色。"+
 			"适合回答：'XXX经历了哪些大事''XXX在什么时候做了什么'。",
 		func(ctx context.Context, input *QueryEventsInput) (string, error) {
+			// 1. 参数校验
+			if errJSON := validateNotEmpty(input.CharacterName, "character_name", "query_events"); errJSON != "" {
+				return errJSON, nil
+			}
+
+			// 2. 依赖不可用
 			if deps.EventsFunc == nil {
 				return `[]`, nil
 			}
-			return deps.EventsFunc(ctx, deps.NovelID, input.CharacterName, deps.MaxChapter)
+
+			// 3. 超时
+			ctx, cancel := withToolTimeout(ctx, "query_events")
+			defer cancel()
+
+			// 4. 执行
+			result, err := deps.EventsFunc(ctx, deps.NovelID, input.CharacterName, deps.MaxChapter)
+			if err != nil {
+				if ctx.Err() == context.DeadlineExceeded {
+					return timeoutErrJSON("query_events"), nil
+				}
+				return toolErrJSON("query_events", err,
+					"图谱查询失败，可尝试用 get_chapters 或 search_chapters 替代"), nil
+			}
+			return result, nil
 		},
 	)
 }
