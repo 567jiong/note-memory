@@ -153,9 +153,12 @@ func Build(deps Deps) ([]tool.BaseTool, error) {
 func newSearchChaptersTool(deps Deps) (tool.InvokableTool, error) {
 	return utils.InferTool(
 		"search_chapters",
-		"搜索小说章节内容（RRF融合 + 交叉编码器精排）。传入中文关键词或自然语言问题，返回相关章节的摘要(summary)、匹配文本片段(content)和相关性得分(score)。"+
+		"搜索小说章节内容（RRF融合 + 交叉编码器精排）。传入中文关键词或自然语言问题。"+
+			"返回格式：{results:[{chapter_num,score,summary,content}], keyword_hits:{词→命中次数}, noise_warning:可选}"+
 			"score 字段含义：>0.7 高相关，0.3-0.7 中等，<0.3 低可信度。"+
 			"content 字段包含匹配到的具体原文片段，优先使用。"+
+			"keyword_hits 统计每个查询词在结果中的出现次数，为 0 说明该词未命中。"+
+			"若 noise_warning 非空，说明高分结果可能仅为部分词的匹配噪音（某关键词命中为0），应结合 resolve_entity 判断该实体是否存在，停止重复搜索。"+
 			"适合查找：剧情细节、事件经过、对话内容。",
 		func(ctx context.Context, input *SearchChaptersInput) (string, error) {
 			// 1. 参数校验
@@ -331,10 +334,10 @@ func newGetChaptersTool(deps Deps) (tool.InvokableTool, error) {
 					end = start
 				}
 				// 范围校验：不允许超大范围
-				if end-start > 20 {
+				if end-start > 5 {
 					return toolErrJSON("get_chapters",
-						fmt.Errorf("章节范围过大 (start=%d, end=%d, 跨度 %d > 20)", start, end, end-start),
-						"单次最多获取 20 章，请缩小范围后分次查询"), nil
+						fmt.Errorf("章节范围过大 (start=%d, end=%d, 跨度 %d > 5)", start, end, end-start),
+						"单次最多获取 5 章，请缩小范围后分次查询"), nil
 				}
 			}
 

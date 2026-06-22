@@ -333,6 +333,97 @@ func (s *Service) rerankTopCandidates(
 	return candidates, nil
 }
 
+// buildSearchResponse wraps raw chapter results with keyword-coverage metadata.
+// When query keywords are absent from all returned content despite high scores,
+// a noise_warning signals the LLM that results are likely spurious matches.
+func (s *Service) buildSearchResponse(query string, results []tools.ChapterResult) tools.SearchResponse {
+	// 1. Extract keywords: jieba tokens + raw space-split terms (deduped)
+	keywords := extractKeywords(query, s.getSegmenter())
+
+	// 2. Build combined text per result for hit counting
+	keywordHits := make(map[string]int, len(keywords))
+	for _, r := range results {
+		haystack := r.Content + " " + r.Summary
+		for _, kw := range keywords {
+			keywordHits[kw] += strings.Count(haystack, kw)
+		}
+	}
+
+	// 3. Detect noise: keyword with 0 hits despite high-score results
+	hasHighScore := false
+	for _, r := range results {
+		if r.Score > 0.5 {
+			hasHighScore = true
+			break
+		}
+	}
+
+	var noiseWarning string
+	if hasHighScore {
+		var missing []string
+		for _, kw := range keywords {
+			if keywordHits[kw] == 0 {
+				missing = append(missing, kw)
+			}
+		}
+		if len(missing) > 0 {
+			noiseWarning = fmt.Sprintf(
+				"关键词 %s 在所有返回结果中均未出现（命中次数: 0）。高分结果可能仅为其他词的匹配噪音。"+
+					"请勿重复搜索——若 resolve_entity 已确认这些实体不存在，应直接告知用户。",
+				strings.Join(quoteEach(missing), "、"),
+			)
+		}
+	}
+
+	return tools.SearchResponse{
+		Results:      results,
+		KeywordHits:  keywordHits,
+		NoiseWarning: noiseWarning,
+	}
+}
+
+// extractKeywords splits a query into unique keywords using jieba + raw term split.
+func extractKeywords(query string, seg *gse.Segmenter) []string {
+	seen := make(map[string]struct{})
+	var kw []string
+
+	// Jieba tokens
+	if seg != nil {
+		for _, t := range seg.Cut(query, true) {
+			t = strings.TrimSpace(t)
+			if t == "" || len([]rune(t)) < 1 {
+				continue
+			}
+			if _, ok := seen[t]; !ok {
+				seen[t] = struct{}{}
+				kw = append(kw, t)
+			}
+		}
+	}
+
+	// Raw space-split terms (catch未登录词 / rare names)
+	for _, t := range strings.Fields(query) {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		if _, ok := seen[t]; !ok {
+			seen[t] = struct{}{}
+			kw = append(kw, t)
+		}
+	}
+
+	return kw
+}
+
+func quoteEach(ss []string) []string {
+	out := make([]string, len(ss))
+	for i, s := range ss {
+		out[i] = `"` + s + `"`
+	}
+	return out
+}
+
 // isCJK checks if a rune is CJK.
 func isCJK(r rune) bool {
 	return (r >= 0x4E00 && r <= 0x9FFF) ||
@@ -382,10 +473,16 @@ func (s *Service) SearchTool() func(ctx context.Context, query string, novelID i
 				ChapterNum: r.Chapter.ChapterNumber,
 				Score:      r.FinalScore,
 				Summary:    r.Chapter.Summary,
-				Content:    contents[r.Chapter.ID], // NOW POPULATED
+				Content:    contents[r.Chapter.ID],
 			})
 		}
-		b, _ := json.Marshal(out)
+
+		// ── Keyword coverage analysis ──────────────────────────────────────
+		// Detect when high-score results are noise from partial keyword matches.
+		// e.g. "韩立 孙悟空" → "韩立" hits many chapters, scores are high,
+		// but "孙悟空" never appears → signal the LLM to stop searching.
+		resp := s.buildSearchResponse(query, out)
+		b, _ := json.Marshal(resp)
 		return string(b), nil
 	}
 }

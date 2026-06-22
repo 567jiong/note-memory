@@ -15,6 +15,15 @@ type ChapterResult struct {
 	Content    string  `json:"content,omitempty"`
 }
 
+// SearchResponse wraps search_chapters results with keyword coverage info.
+// When query keywords don't appear in the returned content despite high scores,
+// a noise_warning signals the LLM to stop searching and inform the user.
+type SearchResponse struct {
+	Results      []ChapterResult `json:"results"`
+	KeywordHits  map[string]int  `json:"keyword_hits"`
+	NoiseWarning string          `json:"noise_warning,omitempty"`
+}
+
 // QueryTimelineInput is the input for the query_timeline tool.
 type QueryTimelineInput struct {
 	CharacterName string `json:"character_name" jsonschema_description:"要查询的人物规范名称（如 韩立）"`
@@ -50,7 +59,7 @@ type ResolveEntityInput struct {
 type GetChaptersInput struct {
 	Start int `json:"start" jsonschema_description:"起始章节号，默认 maxChapter - n + 1"`
 	End   int `json:"end" jsonschema_description:"结束章节号，默认 maxChapter"`
-	N     int `json:"n" jsonschema_description:"最近 N 章快捷写法，默认 5，最大 20。start 和 end 均为 0 时生效"`
+	N     int `json:"n" jsonschema_description:"最近 N 章快捷写法，默认 5，最大 5。start 和 end 均为 0 时生效"`
 }
 
 // ChapterSummary is a single chapter summary returned to the LLM.
