@@ -42,8 +42,10 @@
         <div id="actions-section" class="bg-white rounded-lg shadow p-6 hidden">
             <h2 class="text-lg font-semibold mb-4">🔧 操作</h2>
             <div class="flex flex-wrap gap-2">
-                <button onclick="triggerParse()" class="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition text-sm">🔄 AI 解析</button>
+                <button onclick="triggerParse()" class="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition text-sm" title="对未总结的章节执行 AI 摘要 + Embedding + 全文索引 + 图谱同步">🔄 AI 解析缺失章节</button>
+                <button onclick="resyncGraph()" class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition text-sm" title="从已有摘要数据重建 Neo4j 知识图谱（人物/关系/事件/功法）">🔗 重建知识图谱</button>
             </div>
+            <p id="action-feedback" class="text-sm mt-3 hidden"></p>
         </div>
     </div>
 
@@ -113,11 +115,50 @@ async function updateProgress() {
     } catch (err) { console.error(err); }
 }
 
+function showFeedback(msg, ok) {
+    var fb = document.getElementById('action-feedback');
+    fb.classList.remove('hidden');
+    fb.className = 'text-sm mt-3 ' + (ok ? 'text-green-600' : 'text-red-600');
+    fb.textContent = (ok ? '✅ ' : '❌ ') + msg;
+    setTimeout(function() { fb.classList.add('hidden'); }, 5000);
+}
+
 async function triggerParse() {
+    var btn = event.target;
+    btn.disabled = true;
+    btn.textContent = '⏳ 正在启动...';
     try {
-        await fetch('/api/novels/' + novelId + '/parse', { method: 'POST' });
-        alert('AI 解析已开始（含 embedding 向量生成），请稍后刷新页面查看结果');
-    } catch (err) { alert('触发失败: ' + err.message); }
+        var resp = await fetch('/api/novels/' + novelId + '/parse', { method: 'POST' });
+        var data = await resp.json();
+        if (resp.ok) {
+            showFeedback('AI 解析已启动（摘要 + Embedding + 全文索引 + 图谱同步），后台处理中，请稍后刷新', true);
+        } else {
+            showFeedback(data.error || '启动失败', false);
+        }
+    } catch (err) {
+        showFeedback('网络错误: ' + err.message, false);
+    }
+    btn.disabled = false;
+    btn.textContent = '🔄 AI 解析缺失章节';
+}
+
+async function resyncGraph() {
+    var btn = event.target;
+    btn.disabled = true;
+    btn.textContent = '⏳ 正在同步...';
+    try {
+        var resp = await fetch('/api/novels/' + novelId + '/resync-graph', { method: 'POST' });
+        var data = await resp.json();
+        if (resp.ok) {
+            showFeedback('知识图谱重建完成：' + (data.message || '成功'), true);
+        } else {
+            showFeedback(data.error || '同步失败', false);
+        }
+    } catch (err) {
+        showFeedback('网络错误: ' + err.message, false);
+    }
+    btn.disabled = false;
+    btn.textContent = '🔗 重建知识图谱';
 }
 
 // ---- Sessions ----

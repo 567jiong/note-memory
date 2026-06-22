@@ -1,0 +1,91 @@
+[
+  {
+    "id": "realm-001",
+    "description": "境界查询：当前主角境界",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "主角现在是什么境界？",
+    "expected_tools": ["query_timeline"],
+    "max_iterations": 3
+  },
+  {
+    "id": "rel-001",
+    "description": "关系查询：师徒关系",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "主角的师父是谁？",
+    "expected_tools": ["query_relations"],
+    "max_iterations": 3
+  },
+  {
+    "id": "rel-002",
+    "description": "关系查询：别名先 resolve",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "韩跑跑有哪些仇敌？",
+    "expected_tools": ["resolve_entity", "query_relations"],
+    "max_iterations": 4
+  },
+  {
+    "id": "tech-001",
+    "description": "功法查询：主角修炼的功法",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "主角修炼了哪些功法？",
+    "expected_tools": ["query_techniques"],
+    "max_iterations": 3
+  },
+  {
+    "id": "tech-002",
+    "description": "功法查询：全局功法一览",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "这本书里有哪些厉害的功法？",
+    "expected_tools": ["query_all_techniques"],
+    "max_iterations": 3
+  },
+  {
+    "id": "plot-001",
+    "description": "剧情回顾：最近发生了什么",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "最近几章讲了什么？",
+    "expected_tools": ["get_chapters"],
+    "max_iterations": 3
+  },
+  {
+    "id": "plot-002",
+    "description": "剧情搜索：具体事件",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "主角在拍卖会上做了什么？",
+    "expected_tools": ["search_chapters"],
+    "max_iterations": 4
+  },
+  {
+    "id": "event-001",
+    "description": "事件查询：主角经历的大事",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "主角经历了哪些重大事件？",
+    "expected_tools": ["query_events"],
+    "max_iterations": 3
+  },
+  {
+    "id": "edge-001",
+    "description": "边界：不存在的角色",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "张三丰是什么境界？",
+    "forbidden_tools": ["query_timeline"],
+    "max_iterations": 3
+  },
+  {
+    "id": "edge-002",
+    "description": "边界：超出范围章节",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "第99999章讲了什么？",
+    "max_iterations": 2
+  }
+]

@@ -11,19 +11,60 @@
             "envFile": "${workspaceFolder}/.env"
         },
         {
+            "name": "🔍 RAG Test (单题)",
+            "type": "go",
+            "request": "launch",
+            "mode": "debug",
+            "program": "${workspaceFolder}/cmd/ragtest",
+            "cwd": "${workspaceFolder}",
+            "envFile": "${workspaceFolder}/.env",
+            "args": [
+                "-novel", "${input:novelID}",
+                "-q", "${input:question}"
+            ]
+        },
+        {
+            "name": "📋 RAG Test (批量文件)",
+            "type": "go",
+            "request": "launch",
+            "mode": "debug",
+            "program": "${workspaceFolder}/cmd/ragtest",
+            "cwd": "${workspaceFolder}",
+            "envFile": "${workspaceFolder}/.env",
+            "args": [
+                "-novel", "${input:novelID}",
+                "-file", "${workspaceFolder}/testdata/rag_cases.json"
+            ]
+        },
+        {
+            "name": "🧪 Run All Tests",
+            "type": "go",
+            "request": "launch",
+            "mode": "test",
+            "program": "${workspaceFolder}/...",
+            "cwd": "${workspaceFolder}",
+            "envFile": "${workspaceFolder}/.env"
+        },
+        {
             "name": "🧪 Launch Package",
             "type": "go",
             "request": "launch",
             "mode": "auto",
             "program": "${fileDirname}"
+        }
+    ],
+    "inputs": [
+        {
+            "id": "novelID",
+            "type": "promptString",
+            "description": "小说 ID",
+            "default": "1"
         },
         {
-            "name": "📎 Attach to Process",
-            "type": "go",
-            "request": "attach",
-            "mode": "local",
-            // "processId": "${command:pickProcess}"
-            "port": 8080,
+            "id": "question",
+            "type": "promptString",
+            "description": "测试问题",
+            "default": "主角现在是什么境界？"
         }
     ]
 }

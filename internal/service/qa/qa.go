@@ -108,5 +108,29 @@ func (s *Service) AskQuestionWithHistory(ctx context.Context, novelID int64, his
 	if err != nil {
 		return nil, fmt.Errorf("create agent: %w", err)
 	}
-	return runReadingAgentStreamWithHistory(ctx, readingAgent, novelTitle, maxChapter, history, question, onEvent)
+	return runReadingAgentStreamWithHistory(ctx, readingAgent, novelTitle, maxChapter, history, question, onEvent, nil)
+}
+
+// AskQuestionWithRecorder runs the agent with conversation history and a recorder
+// that captures tool calls, thinking, and results for evaluation purposes.
+// history should NOT include system messages (they are injected at runtime).
+// recorder may be nil (in which case no recording is done).
+func (s *Service) AskQuestionWithRecorder(ctx context.Context, novelID int64, history []*schema.Message, question string, recorder AgentRecorder) (string, error) {
+	cfg, novelTitle, maxChapter, err := s.buildAgentConfig(novelID)
+	if err != nil {
+		return "", err
+	}
+
+	readingAgent, err := newReadingAgent(ctx, cfg)
+	if err != nil {
+		return "", fmt.Errorf("create agent: %w", err)
+	}
+
+	// Use a no-op onEvent since we don't need SSE streaming for eval
+	noopEvent := func(StreamEvent) {}
+	result, err := runReadingAgentStreamWithHistory(ctx, readingAgent, novelTitle, maxChapter, history, question, noopEvent, recorder)
+	if err != nil {
+		return "", err
+	}
+	return result.Answer, nil
 }

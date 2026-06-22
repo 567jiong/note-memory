@@ -461,10 +461,20 @@ func runReadingAgentStream(ctx context.Context, agent adk.Agent, novelTitle stri
 	return fullAnswer, nil
 }
 
+// AgentRecorder is an optional hook interface for recording agent execution details.
+// Implementations can capture tool calls, thinking, and results for evaluation.
+type AgentRecorder interface {
+	OnThinking(step int, content string)
+	OnToolCall(step int, toolName, args string)
+	OnToolResult(toolName, result, toolErr string)
+	OnFinalAnswer(answer string)
+	OnError(err error)
+}
+
 // runReadingAgentStreamWithHistory is like runReadingAgentStream but accepts
 // conversation history (without system messages) and collects all produced
 // messages for memory storage.
-func runReadingAgentStreamWithHistory(ctx context.Context, agent adk.Agent, novelTitle string, maxChapter int, history []*schema.Message, question string, onEvent func(StreamEvent)) (*ChatResult, error) {
+func runReadingAgentStreamWithHistory(ctx context.Context, agent adk.Agent, novelTitle string, maxChapter int, history []*schema.Message, question string, onEvent func(StreamEvent), recorder AgentRecorder) (*ChatResult, error) {
 	runner := adk.NewRunner(ctx, adk.RunnerConfig{
 		Agent:           agent,
 		EnableStreaming: true,
@@ -500,6 +510,9 @@ func runReadingAgentStreamWithHistory(ctx context.Context, agent adk.Agent, nove
 		if event.Err != nil {
 			log.Printf("[QA-Stream-H] ❌ Agent 运行错误: %v", event.Err)
 			onEvent(StreamEvent{Type: "error", Content: event.Err.Error()})
+			if recorder != nil {
+				recorder.OnError(event.Err)
+			}
 			return nil, fmt.Errorf("agent run error: %w", event.Err)
 		}
 
@@ -530,6 +543,9 @@ func runReadingAgentStreamWithHistory(ctx context.Context, agent adk.Agent, nove
 
 				if chunk.ReasoningContent != "" {
 					onEvent(StreamEvent{Type: "thinking", Content: chunk.ReasoningContent})
+					if recorder != nil {
+						recorder.OnThinking(stepNum, chunk.ReasoningContent)
+					}
 				}
 
 				for _, tc := range chunk.ToolCalls {
@@ -565,6 +581,12 @@ func runReadingAgentStreamWithHistory(ctx context.Context, agent adk.Agent, nove
 
 			if len(tcMap) > 0 {
 				stepNum++
+				// Notify recorder of each tool call
+				for i := 0; i <= maxIdx; i++ {
+					if tc, ok := tcMap[i]; ok && recorder != nil {
+						recorder.OnToolCall(stepNum, tc.Function.Name, tc.Function.Arguments)
+					}
+				}
 				// Collect tool call messages
 				toolCalls := make([]schema.ToolCall, 0, len(tcMap))
 				for i := 0; i <= maxIdx; i++ {
@@ -599,6 +621,11 @@ func runReadingAgentStreamWithHistory(ctx context.Context, agent adk.Agent, nove
 				if len(msg.ToolCalls) > 0 {
 					stepNum++
 					produced = append(produced, msg)
+					for _, tc := range msg.ToolCalls {
+						if recorder != nil {
+							recorder.OnToolCall(stepNum, tc.Function.Name, tc.Function.Arguments)
+						}
+					}
 				}
 				if msg.Content != "" {
 					onEvent(StreamEvent{Type: "delta", Content: msg.Content})
@@ -610,6 +637,10 @@ func runReadingAgentStreamWithHistory(ctx context.Context, agent adk.Agent, nove
 
 			case schema.Tool:
 				produced = append(produced, msg)
+				if recorder != nil {
+					toolName := mo.ToolName
+					recorder.OnToolResult(toolName, msg.Content, "")
+				}
 			}
 		}
 	}
@@ -619,9 +650,15 @@ func runReadingAgentStreamWithHistory(ctx context.Context, agent adk.Agent, nove
 	if fullAnswer == "" {
 		log.Println("[QA-Stream-H] ❌ Agent 未产生任何回答")
 		onEvent(StreamEvent{Type: "error", Content: "agent produced no answer"})
+		if recorder != nil {
+			recorder.OnError(fmt.Errorf("agent produced no answer"))
+		}
 		return nil, fmt.Errorf("agent produced no answer")
 	}
 
 	onEvent(StreamEvent{Type: "done", Content: fullAnswer})
+	if recorder != nil {
+		recorder.OnFinalAnswer(fullAnswer)
+	}
 	return &ChatResult{Answer: fullAnswer, Messages: produced}, nil
 }

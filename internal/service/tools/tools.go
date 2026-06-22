@@ -304,7 +304,7 @@ func newGetChaptersTool(deps Deps) (tool.InvokableTool, error) {
 			"三种用法：1) 传 n 获取最近 N 章（如 n=5）；"+
 			"2) 传 start+end 指定范围（如 start=100,end=110）；"+
 			"3) 传 start 获取单章（如 start=50,end=50）。"+
-			"n 默认 5，最大 20。范围不会超出用户阅读进度。",
+			"n 默认 5，最大 5。范围不会超出用户阅读进度。",
 		func(ctx context.Context, input *GetChaptersInput) (string, error) {
 			// 依赖不可用
 			if deps.ChaptersFunc == nil {
@@ -318,8 +318,8 @@ func newGetChaptersTool(deps Deps) (tool.InvokableTool, error) {
 				if n <= 0 {
 					n = 5
 				}
-				if n > 20 {
-					n = 20
+				if n > 5 {
+					n = 5
 				}
 				start = 0
 				end = n
