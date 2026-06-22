@@ -129,6 +129,10 @@ func newReadingAgent(ctx context.Context, cfg readingAgentConfig) (adk.Agent, er
 			},
 		},
 		MaxIterations: 6,
+		// 模型调用失败时自动重试（指数退避：100ms→200ms→400ms，带 jitter）
+		ModelRetryConfig: &adk.ModelRetryConfig{
+			MaxRetries: 2, // 初始请求 + 最多 2 次重试 = 共 3 次
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create chat model agent: %w", err)
