@@ -6,28 +6,10 @@ import (
 )
 
 // InitSchema creates Neo4j constraints and indexes for the knowledge graph.
-// Idempotent — safe to call on every startup.
+// Uses Community Edition-compatible UNIQUE syntax. Idempotent.
 func InitSchema(ctx context.Context, d *Driver) error {
 	if !d.IsEnabled() {
 		return nil
-	}
-
-	constraints := []string{
-		// Novel / Chapter
-		`CREATE CONSTRAINT novel_id IF NOT EXISTS FOR (n:Novel) REQUIRE n.id IS UNIQUE`,
-		`CREATE CONSTRAINT chapter_id IF NOT EXISTS FOR (c:Chapter) REQUIRE c.id IS UNIQUE`,
-
-		// Character — uniqueness on (novel_id, name) so MERGE works correctly
-		`CREATE CONSTRAINT character_novel_name IF NOT EXISTS FOR (c:Character) REQUIRE (c.novel_id, c.name) IS NODE KEY`,
-
-		// Technique — uniqueness on (novel_id, name)
-		`CREATE CONSTRAINT technique_novel_name IF NOT EXISTS FOR (t:Technique) REQUIRE (t.novel_id, t.name) IS NODE KEY`,
-
-		// Indexes for fast lookup
-		`CREATE INDEX character_type IF NOT EXISTS FOR (c:Character) ON (c.type)`,
-		`CREATE INDEX chapter_number IF NOT EXISTS FOR (c:Chapter) ON (c.chapter_number)`,
-		`CREATE INDEX technique_name IF NOT EXISTS FOR (t:Technique) ON (t.name)`,
-		`CREATE INDEX technique_level_name IF NOT EXISTS FOR (tl:TechniqueLevel) ON (tl.level_name)`,
 	}
 
 	s := d.Session(ctx)
@@ -36,13 +18,33 @@ func InitSchema(ctx context.Context, d *Driver) error {
 	}
 	defer s.Close(ctx)
 
-	for _, cypher := range constraints {
-		_, err := s.Run(ctx, cypher, nil)
-		if err != nil {
-			log.Printf("[neo4j] constraint warning: %v", err)
+	constraints := []string{
+		// Node uniqueness
+		`CREATE CONSTRAINT novel_id      IF NOT EXISTS FOR (n:Novel)     REQUIRE n.id IS UNIQUE`,
+		`CREATE CONSTRAINT chapter_id    IF NOT EXISTS FOR (c:Chapter)   REQUIRE c.id IS UNIQUE`,
+		`CREATE CONSTRAINT char_identity IF NOT EXISTS FOR (c:Character) REQUIRE (c.novel_id, c.name) IS UNIQUE`,
+		`CREATE CONSTRAINT event_identity IF NOT EXISTS FOR (e:Event)   REQUIRE (e.novel_id, e.title) IS UNIQUE`,
+		`CREATE CONSTRAINT realm_identity IF NOT EXISTS FOR (r:Realm)   REQUIRE (r.novel_id, r.name) IS UNIQUE`,
+		`CREATE CONSTRAINT tech_identity  IF NOT EXISTS FOR (t:Technique) REQUIRE (t.novel_id, t.name) IS UNIQUE`,
+	}
+
+	for _, c := range constraints {
+		if _, err := s.Run(ctx, c, nil); err != nil {
+			log.Printf("[neo4j] ⚠️ 约束创建失败: %v", err)
 		}
 	}
 
-	log.Println("[neo4j] schema initialized")
+	indexes := []string{
+		`CREATE INDEX character_type IF NOT EXISTS FOR (c:Character) ON (c.type)`,
+		`CREATE INDEX chapter_number IF NOT EXISTS FOR (c:Chapter)   ON (c.number)`,
+	}
+
+	for _, c := range indexes {
+		if _, err := s.Run(ctx, c, nil); err != nil {
+			log.Printf("[neo4j] ⚠️ 索引创建失败: %v", err)
+		}
+	}
+
+	log.Println("[neo4j] schema initialized (6 nodes, 8 relations)")
 	return nil
 }

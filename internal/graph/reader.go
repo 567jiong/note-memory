@@ -6,9 +6,12 @@ import (
 	"fmt"
 
 	"note-memory/internal/service/tools"
+
+	"github.com/neo4j/neo4j-go-driver/v6/neo4j"
 )
 
 // GraphReader executes knowledge graph queries with spoiler-free filtering.
+// Uses the simplified schema: 6 node types, 8 relation types.
 type GraphReader struct {
 	driver *Driver
 }
@@ -21,21 +24,18 @@ func (r *GraphReader) IsEnabled() bool {
 	return r.driver != nil && r.driver.IsEnabled()
 }
 
-// ---- Timeline queries ----
+// ── Realm timeline ───────────────────────────────────────────────────────────
 
-// RealmEntry is a single realm breakthrough record.
 type RealmEntry struct {
 	Realm   string
 	Chapter int
 	Age     int
 }
 
-// RealmTimeline returns a character's realm breakthrough timeline.
 func (r *GraphReader) RealmTimeline(ctx context.Context, novelID int64, charName string, maxChapter int) ([]RealmEntry, error) {
 	if !r.IsEnabled() {
 		return nil, nil
 	}
-
 	s := r.driver.Session(ctx)
 	if s == nil {
 		return nil, nil
@@ -43,55 +43,44 @@ func (r *GraphReader) RealmTimeline(ctx context.Context, novelID int64, charName
 	defer s.Close(ctx)
 
 	result, err := s.Run(ctx, `
-		MATCH (c:Character {novel_id: $novelId, name: $name})
-		      -[b:BREAKTHROUGH_TO]->(r:Realm)
-		WHERE b.at_chapter <= $maxChapter
-		RETURN r.name AS realm, b.at_chapter AS chapter, b.age AS age
-		ORDER BY b.at_chapter
-	`, map[string]any{
-		"novelId":    novelID,
-		"name":       charName,
-		"maxChapter": maxChapter,
-	})
+		MATCH (c:Character {novel_id: $nid, name: $name})
+		      -[b:BREAKTHROUGH]->(r:Realm)
+		WHERE b.chapter <= $max
+		RETURN r.name AS realm, b.chapter AS chapter, b.age AS age
+		ORDER BY b.chapter
+	`, map[string]any{"nid": novelID, "name": charName, "max": maxChapter})
 	if err != nil {
 		return nil, fmt.Errorf("realm timeline: %w", err)
 	}
 
 	var entries []RealmEntry
 	for result.Next(ctx) {
-		record := result.Record()
-		realm, _ := record.Get("realm")
-		chapter, _ := record.Get("chapter")
-		age, _ := record.Get("age")
-
+		rec := result.Record()
 		entries = append(entries, RealmEntry{
-			Realm:   toString(realm),
-			Chapter: toInt(chapter),
-			Age:     toInt(age),
+			Realm:   getStr(rec, "realm"),
+			Chapter: getInt(rec, "chapter"),
+			Age:     getInt(rec, "age"),
 		})
 	}
 	return entries, result.Err()
 }
 
-// ---- Relationship queries ----
+// ── Character relations ──────────────────────────────────────────────────────
 
-// RelationEntry describes a relationship between two characters.
 type RelationEntry struct {
 	FromName     string
 	ToName       string
 	RelationType string
 	SinceChapter int
-	EndedChapter int // 0 if ongoing
+	EndedChapter int
 	TriggerEvent string
 	Description  string
 }
 
-// CharacterRelations returns all relationships for a character up to maxChapter.
 func (r *GraphReader) CharacterRelations(ctx context.Context, novelID int64, charName string, maxChapter int) ([]RelationEntry, error) {
 	if !r.IsEnabled() {
 		return nil, nil
 	}
-
 	s := r.driver.Session(ctx)
 	if s == nil {
 		return nil, nil
@@ -99,118 +88,90 @@ func (r *GraphReader) CharacterRelations(ctx context.Context, novelID int64, cha
 	defer s.Close(ctx)
 
 	result, err := s.Run(ctx, `
-		MATCH (c:Character {novel_id: $novelId, name: $name})
-		      -[r]-(other:Character)
-		WHERE other.first_appearance_chapter <= $maxChapter
-		  AND (r.since_chapter IS NULL OR r.since_chapter <= $maxChapter)
-		  AND (r.ended_chapter IS NULL OR r.ended_chapter >= $maxChapter)
-		  AND type(r) IN ['MASTER_OF', 'FRIEND_OF', 'ENEMY_OF', 'LOVE_INTEREST', 'BELONGS_TO']
+		MATCH (c:Character {novel_id: $nid, name: $name})-[r]-(other:Character)
+		WHERE other.first <= $max
+		  AND (r.since IS NULL OR r.since <= $max)
+		  AND (r.until IS NULL OR r.until >= $max)
+		  AND type(r) IN ['MASTER_OF','FRIEND_OF','ENEMY_OF','LOVES','BELONGS_TO']
 		RETURN c.name AS fromName, other.name AS toName, type(r) AS relType,
-		       r.since_chapter AS since, r.ended_chapter AS ended,
-		       r.trigger_event AS triggerEvent, r.description AS description
-		ORDER BY r.since_chapter
-	`, map[string]any{
-		"novelId":    novelID,
-		"name":       charName,
-		"maxChapter": maxChapter,
-	})
+		       r.since AS since, r.until AS until,
+		       r.trigger AS trigger, r.description AS description
+		ORDER BY r.since
+	`, map[string]any{"nid": novelID, "name": charName, "max": maxChapter})
 	if err != nil {
 		return nil, fmt.Errorf("character relations: %w", err)
 	}
 
 	var entries []RelationEntry
 	for result.Next(ctx) {
-		record := result.Record()
-		from, _ := record.Get("fromName")
-		to, _ := record.Get("toName")
-		relType, _ := record.Get("relType")
-		since, _ := record.Get("since")
-		ended, _ := record.Get("ended")
-		triggerEvent, _ := record.Get("triggerEvent")
-		description, _ := record.Get("description")
-
+		rec := result.Record()
 		entries = append(entries, RelationEntry{
-			FromName:     toString(from),
-			ToName:       toString(to),
-			RelationType: toString(relType),
-			SinceChapter: toInt(since),
-			EndedChapter: toInt(ended),
-			TriggerEvent: toString(triggerEvent),
-			Description:  toString(description),
+			FromName:     getStr(rec, "fromName"),
+			ToName:       getStr(rec, "toName"),
+			RelationType: getStr(rec, "relType"),
+			SinceChapter: getInt(rec, "since"),
+			EndedChapter: getInt(rec, "until"),
+			TriggerEvent: getStr(rec, "trigger"),
+			Description:  getStr(rec, "description"),
 		})
 	}
 	return entries, result.Err()
 }
 
-// ---- Technique queries ----
+// ── Technique timeline ───────────────────────────────────────────────────────
 
-// TechniqueEntry is a single technique acquisition record.
 type TechniqueEntry struct {
-	Technique   string
-	Level       string
-	Action      string
-	Chapter     int
+	Technique    string
+	Level        string
+	Action       string
+	Chapter      int
 	Practitioner string
-	Description string
+	Description  string
 }
 
-// TechniqueTimeline returns a character's technique acquisition timeline.
 func (r *GraphReader) TechniqueTimeline(ctx context.Context, novelID int64, charName string, maxChapter int) ([]TechniqueEntry, error) {
 	if !r.IsEnabled() {
 		return nil, nil
 	}
-
 	s := r.driver.Session(ctx)
 	if s == nil {
 		return nil, nil
 	}
 	defer s.Close(ctx)
 
+	// level is a property on the LEARNS edge — no TechniqueLevel node
 	result, err := s.Run(ctx, `
-		MATCH (c:Character {novel_id: $novelId, name: $name})
+		MATCH (c:Character {novel_id: $nid, name: $name})
 		      -[l:LEARNS]->(t:Technique)
-		WHERE l.at_chapter <= $maxChapter
-		OPTIONAL MATCH (c)-[lr:LEARNS_LEVEL]->(tl:TechniqueLevel {novel_id: $novelId})
-		WHERE lr.at_chapter <= $maxChapter AND tl.technique_name = t.name
-		RETURN t.name AS technique, tl.level_name AS level, l.action AS action,
-		       l.at_chapter AS chapter, l.description AS description
-		ORDER BY l.at_chapter
-	`, map[string]any{
-		"novelId":    novelID,
-		"name":       charName,
-		"maxChapter": maxChapter,
-	})
+		WHERE l.chapter <= $max
+		RETURN t.name AS technique, l.level AS level, l.action AS action,
+		       l.chapter AS chapter, l.description AS description
+		ORDER BY l.chapter
+	`, map[string]any{"nid": novelID, "name": charName, "max": maxChapter})
 	if err != nil {
 		return nil, fmt.Errorf("technique timeline: %w", err)
 	}
 
 	var entries []TechniqueEntry
 	for result.Next(ctx) {
-		record := result.Record()
-		tech, _ := record.Get("technique")
-		level, _ := record.Get("level")
-		action, _ := record.Get("action")
-		chapter, _ := record.Get("chapter")
-		description, _ := record.Get("description")
-
+		rec := result.Record()
 		entries = append(entries, TechniqueEntry{
-			Technique:    toString(tech),
-			Level:        toString(level),
-			Action:       toString(action),
-			Chapter:      toInt(chapter),
+			Technique:    getStr(rec, "technique"),
+			Level:        getStr(rec, "level"),
+			Action:       getStr(rec, "action"),
+			Chapter:      getInt(rec, "chapter"),
 			Practitioner: charName,
-			Description:  toString(description),
+			Description:  getStr(rec, "description"),
 		})
 	}
 	return entries, result.Err()
 }
 
-// AllTechniques returns all known techniques up to maxChapter.
+// AllTechniques returns all known techniques across all characters up to maxChapter.
 func (r *GraphReader) AllTechniques(ctx context.Context, novelID int64, maxChapter int) ([]TechniqueEntry, error) {
 	if !r.IsEnabled() {
 		return nil, nil
 	}
-
 	s := r.driver.Session(ctx)
 	if s == nil {
 		return nil, nil
@@ -218,60 +179,44 @@ func (r *GraphReader) AllTechniques(ctx context.Context, novelID int64, maxChapt
 	defer s.Close(ctx)
 
 	result, err := s.Run(ctx, `
-		MATCH (c:Character)-[l:LEARNS]->(t:Technique {novel_id: $novelId})
-		WHERE l.at_chapter <= $maxChapter
-		OPTIONAL MATCH (c)-[lr:LEARNS_LEVEL]->(tl:TechniqueLevel {novel_id: $novelId})
-		WHERE lr.at_chapter <= $maxChapter AND tl.technique_name = t.name
-		RETURN t.name AS technique, tl.level_name AS level, l.action AS action,
-		       l.at_chapter AS chapter, c.name AS practitioner, l.description AS description
-		ORDER BY l.at_chapter
-	`, map[string]any{
-		"novelId":    novelID,
-		"maxChapter": maxChapter,
-	})
+		MATCH (c:Character)-[l:LEARNS]->(t:Technique {novel_id: $nid})
+		WHERE l.chapter <= $max
+		RETURN t.name AS technique, l.level AS level, l.action AS action,
+		       l.chapter AS chapter, c.name AS practitioner, l.description AS description
+		ORDER BY l.chapter
+	`, map[string]any{"nid": novelID, "max": maxChapter})
 	if err != nil {
 		return nil, fmt.Errorf("all techniques: %w", err)
 	}
 
 	var entries []TechniqueEntry
 	for result.Next(ctx) {
-		record := result.Record()
-		tech, _ := record.Get("technique")
-		level, _ := record.Get("level")
-		action, _ := record.Get("action")
-		chapter, _ := record.Get("chapter")
-		practitioner, _ := record.Get("practitioner")
-		description, _ := record.Get("description")
-
+		rec := result.Record()
 		entries = append(entries, TechniqueEntry{
-			Technique:    toString(tech),
-			Level:        toString(level),
-			Action:       toString(action),
-			Chapter:      toInt(chapter),
-			Practitioner: toString(practitioner),
-			Description:  toString(description),
+			Technique:    getStr(rec, "technique"),
+			Level:        getStr(rec, "level"),
+			Action:       getStr(rec, "action"),
+			Chapter:      getInt(rec, "chapter"),
+			Practitioner: getStr(rec, "practitioner"),
+			Description:  getStr(rec, "description"),
 		})
 	}
 	return entries, result.Err()
 }
 
-// ---- Event queries ----
+// ── Character events ─────────────────────────────────────────────────────────
 
-// EventEntry is a single event record for a specific character.
 type EventEntry struct {
 	Title   string
 	Chapter int
 	Summary string
-	Role    string // character's role in the event
+	Role    string
 }
 
-// CharacterEvents returns events a character has participated in, ordered by chapter.
-// Limited to 20 most recent events to keep context manageable.
 func (r *GraphReader) CharacterEvents(ctx context.Context, novelID int64, charName string, maxChapter int) ([]EventEntry, error) {
 	if !r.IsEnabled() {
 		return nil, nil
 	}
-
 	s := r.driver.Session(ctx)
 	if s == nil {
 		return nil, nil
@@ -279,43 +224,33 @@ func (r *GraphReader) CharacterEvents(ctx context.Context, novelID int64, charNa
 	defer s.Close(ctx)
 
 	result, err := s.Run(ctx, `
-		MATCH (c:Character {novel_id: $novelId, name: $name})
-		      -[p:PARTICIPATES_IN]->(e:Event)
-		WHERE p.at_chapter <= $maxChapter
-		RETURN e.title AS title, e.chapter_number AS chapter,
-		       e.summary AS summary, p.role AS role
-		ORDER BY e.chapter_number DESC
+		MATCH (c:Character {novel_id: $nid, name: $name})
+		      -[inv:INVOLVED_IN]->(e:Event)
+		WHERE inv.chapter <= $max
+		RETURN e.title AS title, inv.chapter AS chapter,
+		       e.summary AS summary, inv.role AS role
+		ORDER BY inv.chapter DESC
 		LIMIT 20
-	`, map[string]any{
-		"novelId":    novelID,
-		"name":       charName,
-		"maxChapter": maxChapter,
-	})
+	`, map[string]any{"nid": novelID, "name": charName, "max": maxChapter})
 	if err != nil {
 		return nil, fmt.Errorf("character events: %w", err)
 	}
 
 	var entries []EventEntry
 	for result.Next(ctx) {
-		record := result.Record()
-		title, _ := record.Get("title")
-		chapter, _ := record.Get("chapter")
-		summary, _ := record.Get("summary")
-		role, _ := record.Get("role")
-
+		rec := result.Record()
 		entries = append(entries, EventEntry{
-			Title:   toString(title),
-			Chapter: toInt(chapter),
-			Summary: toString(summary),
-			Role:    toString(role),
+			Title:   getStr(rec, "title"),
+			Chapter: getInt(rec, "chapter"),
+			Summary: getStr(rec, "summary"),
+			Role:    getStr(rec, "role"),
 		})
 	}
 	return entries, result.Err()
 }
 
-// ---- Tool factories for ADK agents ----
+// ── Tool factories for ADK agents ────────────────────────────────────────────
 
-// TimelineTool returns a closure matching tools.Deps.TimelineFunc.
 func (r *GraphReader) TimelineTool() func(ctx context.Context, novelID int64, charName string, maxChapter int) (string, error) {
 	return func(ctx context.Context, novelID int64, charName string, maxChapter int) (string, error) {
 		if r == nil || !r.IsEnabled() {
@@ -334,7 +269,6 @@ func (r *GraphReader) TimelineTool() func(ctx context.Context, novelID int64, ch
 	}
 }
 
-// RelationsTool returns a closure matching tools.Deps.RelationsFunc.
 func (r *GraphReader) RelationsTool() func(ctx context.Context, novelID int64, charName string, maxChapter int) (string, error) {
 	return func(ctx context.Context, novelID int64, charName string, maxChapter int) (string, error) {
 		if r == nil || !r.IsEnabled() {
@@ -356,7 +290,6 @@ func (r *GraphReader) RelationsTool() func(ctx context.Context, novelID int64, c
 	}
 }
 
-// TechniqueTool returns a closure matching tools.Deps.TechniqueFunc.
 func (r *GraphReader) TechniqueTool() func(ctx context.Context, novelID int64, charName string, maxChapter int) (string, error) {
 	return func(ctx context.Context, novelID int64, charName string, maxChapter int) (string, error) {
 		if r == nil || !r.IsEnabled() {
@@ -378,7 +311,6 @@ func (r *GraphReader) TechniqueTool() func(ctx context.Context, novelID int64, c
 	}
 }
 
-// AllTechniquesTool returns a closure matching tools.Deps.AllTechniquesFunc.
 func (r *GraphReader) AllTechniquesTool() func(ctx context.Context, novelID int64, maxChapter int) (string, error) {
 	return func(ctx context.Context, novelID int64, maxChapter int) (string, error) {
 		if r == nil || !r.IsEnabled() {
@@ -400,15 +332,13 @@ func (r *GraphReader) AllTechniquesTool() func(ctx context.Context, novelID int6
 	}
 }
 
-// EventsTool returns a closure matching tools.Deps.EventsFunc.
-// Requires a character name — returns up to 20 most recent events they participated in.
 func (r *GraphReader) EventsTool() func(ctx context.Context, novelID int64, charName string, maxChapter int) (string, error) {
 	return func(ctx context.Context, novelID int64, charName string, maxChapter int) (string, error) {
 		if r == nil || !r.IsEnabled() {
 			return `[]`, nil
 		}
 		if charName == "" {
-			return `[]`, nil // character name is required
+			return `[]`, nil
 		}
 		entries, err := r.CharacterEvents(ctx, novelID, charName, maxChapter)
 		if err != nil {
@@ -426,9 +356,11 @@ func (r *GraphReader) EventsTool() func(ctx context.Context, novelID int64, char
 	}
 }
 
-// ---- Type helpers ----
+// ── Record helpers ────────────────────────────────────────────────────────────
 
-func toString(v any) string {
+func getStr(rec *neo4j.Record, key string) string {
+	// nolint:staticcheck // Record.Get returns (any, bool), we only need the value
+	v, _ := rec.Get(key)
 	if v == nil {
 		return ""
 	}
@@ -438,7 +370,8 @@ func toString(v any) string {
 	return fmt.Sprintf("%v", v)
 }
 
-func toInt(v any) int {
+func getInt(rec *neo4j.Record, key string) int {
+	v, _ := rec.Get(key)
 	if v == nil {
 		return 0
 	}

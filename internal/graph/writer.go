@@ -12,6 +12,11 @@ import (
 )
 
 // GraphWriter syncs AI-extracted chapter data into the Neo4j knowledge graph.
+//
+// Node types (6):   Novel, Chapter, Character, Realm, Event, Technique
+// Relation types (8): HAS_CHAPTER, APPEARS_IN, BREAKTHROUGH,
+//                      MASTER_OF, FRIEND_OF, ENEMY_OF, LOVES, BELONGS_TO,
+//                      LEARNS, INVOLVED_IN, OCCURS_IN
 type GraphWriter struct {
 	driver *Driver
 }
@@ -25,6 +30,7 @@ func (w *GraphWriter) IsEnabled() bool {
 }
 
 // SyncChapter writes chapter entities, relationships, and techniques to Neo4j.
+// Errors on individual items are logged and skipped (best-effort per item).
 func (w *GraphWriter) SyncChapter(
 	ctx context.Context,
 	novel *model.Novel,
@@ -44,42 +50,50 @@ func (w *GraphWriter) SyncChapter(
 	}
 	defer s.Close(ctx)
 
-	// 1. Ensure novel + chapter nodes
-	_, err := s.Run(ctx, `
-		MERGE (n:Novel {id: $novelId})
-		  ON CREATE SET n.title = $novelTitle, n.author = $author
-		MERGE (c:Chapter {id: $chapterId})
-		  ON CREATE SET c.novel_id = $novelId, c.chapter_number = $num, c.title = $title
+	// 1. Novel + Chapter
+	if _, err := s.Run(ctx, `
+		MERGE (n:Novel {id: $id})  ON CREATE SET n.title = $title, n.author = $author
+		MERGE (c:Chapter {id: $chId}) ON CREATE SET c.novel_id = $id, c.number = $num, c.title = $chTitle
 		MERGE (n)-[:HAS_CHAPTER]->(c)
 	`, map[string]any{
-		"novelId":    novel.ID,
-		"novelTitle": novel.Title,
-		"author":     novel.Author,
-		"chapterId":  ch.ID,
-		"num":        ch.ChapterNumber,
-		"title":      ch.Title,
-	})
-	if err != nil {
+		"id":       novel.ID,
+		"title":    novel.Title,
+		"author":   novel.Author,
+		"chId":     ch.ID,
+		"num":      ch.ChapterNumber,
+		"chTitle":  ch.Title,
+	}); err != nil {
 		return fmt.Errorf("sync novel+chapter: %w", err)
 	}
 
-	// 2. UPSERT characters
+	// 2. Characters
+	nChar := 0
 	for _, char := range chars {
 		if char.Name == "" || isNoisyName(char.Name) {
 			continue
 		}
-		w.syncCharacter(ctx, s, novel.ID, ch.ChapterNumber, ch.ID, char)
+		if err := w.syncCharacter(ctx, s, novel.ID, ch.ChapterNumber, ch.ID, char); err != nil {
+			log.Printf("[graph] ⚠️ ch%d char[%s]: %v", ch.ChapterNumber, char.Name, err)
+			continue
+		}
+		nChar++
 	}
 
-	// 3. UPSERT events
+	// 3. Events
+	nEvt := 0
 	for _, evt := range events {
 		if evt.Title == "" {
 			continue
 		}
-		w.syncEvent(ctx, s, novel.ID, ch.ChapterNumber, ch.ID, evt)
+		if err := w.syncEvent(ctx, s, novel.ID, ch.ChapterNumber, ch.ID, evt); err != nil {
+			log.Printf("[graph] ⚠️ ch%d event[%s]: %v", ch.ChapterNumber, evt.Title, err)
+			continue
+		}
+		nEvt++
 	}
 
-	// 4. UPSERT character relationships
+	// 4. Relations (BELONGS_TO is now a real edge)
+	nRel := 0
 	for _, rel := range relations {
 		if rel.FromName == "" || rel.ToName == "" || rel.RelationType == "" {
 			continue
@@ -87,231 +101,226 @@ func (w *GraphWriter) SyncChapter(
 		if isNoisyName(rel.FromName) || isNoisyName(rel.ToName) {
 			continue
 		}
-		w.syncRelation(ctx, s, novel.ID, ch.ChapterNumber, rel)
+		if err := w.syncRelation(ctx, s, novel.ID, ch.ChapterNumber, rel); err != nil {
+			log.Printf("[graph] ⚠️ ch%d rel[%s -%s-> %s]: %v",
+				ch.ChapterNumber, rel.FromName, rel.RelationType, rel.ToName, err)
+			continue
+		}
+		nRel++
 	}
 
-	// 5. UPSERT techniques
+	// 5. Techniques (level is now a property on LEARNS edge, no TechniqueLevel node)
+	nTech := 0
 	for _, tech := range techniques {
 		if tech.Name == "" || tech.Practitioner == "" {
 			continue
 		}
-		w.syncTechnique(ctx, s, novel.ID, ch.ChapterNumber, tech)
+		if err := w.syncTechnique(ctx, s, novel.ID, ch.ChapterNumber, tech); err != nil {
+			log.Printf("[graph] ⚠️ ch%d tech[%s]: %v", ch.ChapterNumber, tech.Name, err)
+			continue
+		}
+		nTech++
 	}
 
-	log.Printf("[graph] chapter %d synced: %d characters, %d events, %d relations, %d techniques",
-		ch.ChapterNumber, len(chars), len(events), len(relations), len(techniques))
+	log.Printf("[graph] ✅ ch%d: %d char %d event %d rel %d tech",
+		ch.ChapterNumber, nChar, nEvt, nRel, nTech)
 	return nil
 }
 
-func (w *GraphWriter) syncCharacter(ctx context.Context, s neo4j.Session, novelID int64, chapterNum int, chapterID int64, char model.CharacterInfo) {
-	// Use AI-classified type; fallback to "配角" if empty (conservative — avoids false "主角")
+// ── syncCharacter ────────────────────────────────────────────────────────────
+
+func (w *GraphWriter) syncCharacter(ctx context.Context, s neo4j.Session,
+	novelID int64, chapterNum int, chapterID int64, char model.CharacterInfo) error {
+
 	charType := char.Type
 	if charType == "" {
 		charType = "配角"
 	}
 
-	s.Run(ctx, `
-		MERGE (c:Character {novel_id: $novelId, name: $name})
-		  ON CREATE SET
-		    c.type = $type,
-		    c.first_appearance_chapter = $chapterNum,
-		    c.last_appearance_chapter = $chapterNum
-		  ON MATCH SET
-		    c.type = CASE WHEN c.type = '路人' AND $type != '路人' THEN $type ELSE c.type END,
-		    c.last_appearance_chapter = $chapterNum
+	_, err := s.Run(ctx, `
+		MERGE (c:Character {novel_id: $nid, name: $name})
+		  ON CREATE SET c.type = $type, c.first = $ch, c.last = $ch
+		  ON MATCH  SET c.type = CASE WHEN c.type = '路人' AND $type <> '路人' THEN $type ELSE c.type END,
+		               c.last = $ch
 		WITH c
-		MATCH (ch:Chapter {id: $chapterId})
-		MERGE (c)-[r:APPEARS_IN]->(ch)
+		MATCH (ch:Chapter {id: $chId})
+		MERGE (c)-[r:APPEARS_IN {chapter: $ch}]->(ch)
 		  ON CREATE SET r.status = $status, r.age = $age
-		  ON MATCH SET r.status = $status
 	`, map[string]any{
-		"novelId":   novelID,
-		"name":      char.Name,
-		"type":      charType,
-		"chapterNum": chapterNum,
-		"chapterId": chapterID,
-		"status":    char.Status,
-		"age":       extractAge(char.Status),
+		"nid":    novelID,
+		"name":   char.Name,
+		"type":   charType,
+		"ch":     chapterNum,
+		"chId":   chapterID,
+		"status": char.Status,
+		"age":    extractAge(char.Status),
 	})
-
-	// Sync realm breakthrough (uses LLM-extracted realm from CharacterInfo)
-	if char.Realm != "" {
-		w.syncRealmBreakthrough(ctx, s, novelID, char.Name, chapterNum, char.Realm, extractAge(char.Status))
+	if err != nil {
+		return fmt.Errorf("merge character: %w", err)
 	}
+
+	// Realm breakthrough
+	if char.Realm != "" {
+		if err := w.syncBreakthrough(ctx, s, novelID, char.Name, chapterNum, char.Realm, extractAge(char.Status)); err != nil {
+			log.Printf("[graph] ⚠️ ch%d realm[%s→%s]: %v", chapterNum, char.Name, char.Realm, err)
+		}
+	}
+	return nil
 }
 
-func (w *GraphWriter) syncRealmBreakthrough(ctx context.Context, s neo4j.Session, novelID int64, charName string, chapterNum int, realm string, age int) {
-	s.Run(ctx, `
-		MERGE (r:Realm {novel_id: $novelId, name: $realm})
+// ── syncBreakthrough ─────────────────────────────────────────────────────────
+
+func (w *GraphWriter) syncBreakthrough(ctx context.Context, s neo4j.Session,
+	novelID int64, charName string, chapterNum int, realm string, age int) error {
+
+	_, err := s.Run(ctx, `
+		MERGE (r:Realm {novel_id: $nid, name: $realm})
 		WITH r
-		MATCH (c:Character {novel_id: $novelId, name: $name})
-		MERGE (c)-[b:BREAKTHROUGH_TO {at_chapter: $chapterNum}]->(r)
+		MATCH (c:Character {novel_id: $nid, name: $name})
+		MERGE (c)-[b:BREAKTHROUGH {chapter: $ch}]->(r)
 		  ON CREATE SET b.age = $age
 	`, map[string]any{
-		"novelId":   novelID,
-		"realm":     realm,
-		"name":      charName,
-		"chapterNum": chapterNum,
-		"age":       age,
+		"nid":   novelID,
+		"realm": realm,
+		"name":  charName,
+		"ch":    chapterNum,
+		"age":   age,
 	})
+	if err != nil {
+		return fmt.Errorf("breakthrough: %w", err)
+	}
+	return nil
 }
 
-func (w *GraphWriter) syncRelation(ctx context.Context, s neo4j.Session, novelID int64, chapterNum int, rel model.CharacterRelation) {
-	// BELONGS_TO: "to" is an organization name, not a character — handle as a string property
-	if rel.RelationType == "BELONGS_TO" {
-		s.Run(ctx, `
-			MATCH (a:Character {novel_id: $novelId, name: $fromName})
-			SET a.faction = $toName
-		`, map[string]any{
-			"novelId":  novelID,
-			"fromName": rel.FromName,
-			"toName":   rel.ToName,
-		})
-		return
-	}
+// ── syncRelation ─────────────────────────────────────────────────────────────
+// BELONGS_TO is now a real relationship edge (Character → Character).
+
+func (w *GraphWriter) syncRelation(ctx context.Context, s neo4j.Session,
+	novelID int64, chapterNum int, rel model.CharacterRelation) error {
 
 	relType := normalizeRelType(rel.RelationType)
 	if relType == "" {
-		return
+		return fmt.Errorf("unknown relation type: %s", rel.RelationType)
 	}
 
-	// Determine if relationship is ending
+	// BELONGS_TO: ensure target (faction) exists as a Character node first
+	if rel.RelationType == "BELONGS_TO" {
+		if _, err := s.Run(ctx, `
+			MERGE (f:Character {novel_id: $nid, name: $faction})
+			  ON CREATE SET f.type = '势力', f.first = $ch, f.last = $ch
+			  ON MATCH  SET f.last = $ch
+		`, map[string]any{
+			"nid":     novelID,
+			"faction": rel.ToName,
+			"ch":      chapterNum,
+		}); err != nil {
+			return fmt.Errorf("ensure faction: %w", err)
+		}
+	}
+
 	ended := false
 	desc := strings.ToLower(rel.Description)
 	if strings.Contains(desc, "断裂") || strings.Contains(desc, "结束") || strings.Contains(desc, "决裂") {
 		ended = true
 	}
 
-	cypher := fmt.Sprintf(`
-		MATCH (a:Character {novel_id: $novelId, name: $fromName})
-		MATCH (b:Character {novel_id: $novelId, name: $toName})
+	_, err := s.Run(ctx, fmt.Sprintf(`
+		MATCH (a:Character {novel_id: $nid, name: $from})
+		MATCH (b:Character {novel_id: $nid, name: $to})
 		MERGE (a)-[r:%s]->(b)
-		  ON CREATE SET
-		    r.since_chapter = $chapterNum,
-		    r.trigger_event = $triggerEvent,
-		    r.description = $description
-		  ON MATCH SET
-		    r.ended_chapter = CASE WHEN $ended THEN $chapterNum ELSE r.ended_chapter END
-	`, relType)
-
-	s.Run(ctx, cypher, map[string]any{
-		"novelId":      novelID,
-		"fromName":     rel.FromName,
-		"toName":       rel.ToName,
-		"chapterNum":   chapterNum,
-		"triggerEvent": rel.TriggerEvent,
-		"description":  rel.Description,
-		"ended":        ended,
+		  ON CREATE SET r.since = $ch, r.trigger = $trigger, r.description = $desc
+		  ON MATCH  SET r.until = CASE WHEN $ended THEN $ch ELSE r.until END
+	`, relType), map[string]any{
+		"nid":     novelID,
+		"from":    rel.FromName,
+		"to":      rel.ToName,
+		"ch":      chapterNum,
+		"trigger": rel.TriggerEvent,
+		"desc":    rel.Description,
+		"ended":   ended,
 	})
-
-	// Link relationship to the triggering event if specified
-	if rel.TriggerEvent != "" {
-		s.Run(ctx, `
-			MATCH (a:Character {novel_id: $novelId, name: $fromName})
-			      -[r]->(b:Character {novel_id: $novelId, name: $toName})
-			MATCH (e:Event {novel_id: $novelId, title: $eventTitle})
-			MERGE (r)-[:TRIGGERED_BY]->(e)
-		`, map[string]any{
-			"novelId":    novelID,
-			"fromName":   rel.FromName,
-			"toName":     rel.ToName,
-			"eventTitle": rel.TriggerEvent,
-		})
+	if err != nil {
+		return fmt.Errorf("merge relation %s: %w", relType, err)
 	}
+	return nil
 }
 
-func (w *GraphWriter) syncTechnique(ctx context.Context, s neo4j.Session, novelID int64, chapterNum int, tech model.TechniqueInfo) {
-	// Create Technique node
-	s.Run(ctx, `
-		MERGE (t:Technique {novel_id: $novelId, name: $name})
-		  ON CREATE SET t.description = $description
+// ── syncTechnique ─────────────────────────────────────────────────────────────
+// level is now a property on the LEARNS edge (no TechniqueLevel node).
+
+func (w *GraphWriter) syncTechnique(ctx context.Context, s neo4j.Session,
+	novelID int64, chapterNum int, tech model.TechniqueInfo) error {
+
+	_, err := s.Run(ctx, `
+		MERGE (t:Technique {novel_id: $nid, name: $name})
+		  ON CREATE SET t.description = $desc
+		WITH t
+		MATCH (c:Character {novel_id: $nid, name: $practitioner})
+		MERGE (c)-[l:LEARNS {chapter: $ch}]->(t)
+		  ON CREATE SET l.action = $action, l.level = $level, l.description = $desc
+		  ON MATCH  SET l.action = CASE WHEN $action <> '' AND (l.action IS NULL OR $action = '突破') THEN $action ELSE l.action END,
+		               l.level  = CASE WHEN $level  <> '' THEN $level  ELSE l.level END
 	`, map[string]any{
-		"novelId":     novelID,
-		"name":        tech.Name,
-		"description": tech.Description,
-	})
-
-	// Create TechniqueLevel if a level is specified
-	if tech.Level != "" {
-		s.Run(ctx, `
-			MERGE (t:Technique {novel_id: $novelId, name: $techName})
-			MERGE (tl:TechniqueLevel {novel_id: $novelId, technique_name: $techName, level_name: $level})
-			  ON CREATE SET tl.description = $description
-			MERGE (t)-[:HAS_LEVEL]->(tl)
-		`, map[string]any{
-			"novelId":     novelID,
-			"techName":    tech.Name,
-			"level":       tech.Level,
-			"description": tech.Description,
-		})
-
-		// Character reaches this level
-		s.Run(ctx, `
-			MATCH (c:Character {novel_id: $novelId, name: $practitioner})
-			MATCH (tl:TechniqueLevel {novel_id: $novelId, technique_name: $techName, level_name: $level})
-			MERGE (c)-[lr:LEARNS_LEVEL {at_chapter: $chapterNum}]->(tl)
-			  ON CREATE SET lr.action = $action
-		`, map[string]any{
-			"novelId":      novelID,
-			"practitioner": tech.Practitioner,
-			"techName":     tech.Name,
-			"level":        tech.Level,
-			"chapterNum":   chapterNum,
-			"action":       tech.Action,
-		})
-	}
-
-	// Character learns technique
-	s.Run(ctx, `
-		MATCH (c:Character {novel_id: $novelId, name: $practitioner})
-		MATCH (t:Technique {novel_id: $novelId, name: $techName})
-		MERGE (c)-[l:LEARNS]->(t)
-		  ON CREATE SET l.at_chapter = $chapterNum, l.action = $action, l.description = $description
-		  ON MATCH SET l.action = CASE WHEN $action = '突破' OR l.action IS NULL THEN $action ELSE l.action END
-	`, map[string]any{
-		"novelId":      novelID,
+		"nid":          novelID,
+		"name":         tech.Name,
+		"desc":         tech.Description,
 		"practitioner": tech.Practitioner,
-		"techName":     tech.Name,
-		"chapterNum":   chapterNum,
+		"ch":           chapterNum,
 		"action":       tech.Action,
-		"description":  tech.Description,
+		"level":        tech.Level,
 	})
+	if err != nil {
+		return fmt.Errorf("merge technique: %w", err)
+	}
+	return nil
 }
 
-func (w *GraphWriter) syncEvent(ctx context.Context, s neo4j.Session, novelID int64, chapterNum int, chapterID int64, evt model.EventInfo) {
-	s.Run(ctx, `
-		MERGE (e:Event {novel_id: $novelId, title: $title})
-		  ON CREATE SET e.summary = $summary, e.impact = $impact, e.chapter_number = $chapterNum
-		WITH e
-		MATCH (ch:Chapter {id: $chapterId})
-		MERGE (e)-[:HAPPENS_IN]->(ch)
-	`, map[string]any{
-		"novelId":    novelID,
-		"title":      evt.Title,
-		"summary":    evt.Summary,
-		"impact":     evt.Impact,
-		"chapterNum": chapterNum,
-		"chapterId":  chapterID,
-	})
+// ── syncEvent ────────────────────────────────────────────────────────────────
 
+func (w *GraphWriter) syncEvent(ctx context.Context, s neo4j.Session,
+	novelID int64, chapterNum int, chapterID int64, evt model.EventInfo) error {
+
+	_, err := s.Run(ctx, `
+		MERGE (e:Event {novel_id: $nid, title: $title})
+		  ON CREATE SET e.summary = $summary, e.chapter = $ch
+		WITH e
+		MATCH (ch:Chapter {id: $chId})
+		MERGE (e)-[:OCCURS_IN]->(ch)
+	`, map[string]any{
+		"nid":     novelID,
+		"title":   evt.Title,
+		"summary": evt.Summary,
+		"ch":      chapterNum,
+		"chId":    chapterID,
+	})
+	if err != nil {
+		return fmt.Errorf("merge event: %w", err)
+	}
+
+	// Link participants
 	for _, name := range evt.Participants {
 		if name == "" || isNoisyName(name) {
 			continue
 		}
-		s.Run(ctx, `
-			MATCH (c:Character {novel_id: $novelId, name: $name})
-			MATCH (e:Event {novel_id: $novelId, title: $title})
-			MERGE (c)-[:PARTICIPATES_IN {role: '参与者', at_chapter: $chapterNum}]->(e)
+		if _, err := s.Run(ctx, `
+			MATCH (c:Character {novel_id: $nid, name: $name})
+			MATCH (e:Event    {novel_id: $nid, title: $title})
+			MERGE (c)-[:INVOLVED_IN {chapter: $ch, role: $role}]->(e)
 		`, map[string]any{
-			"novelId":    novelID,
-			"name":       name,
-			"title":      evt.Title,
-			"chapterNum": chapterNum,
-		})
+			"nid":   novelID,
+			"name":  name,
+			"title": evt.Title,
+			"ch":    chapterNum,
+			"role":  "参与者",
+		}); err != nil {
+			log.Printf("[graph] ⚠️ ch%d event[%s] participant[%s]: %v",
+				chapterNum, evt.Title, name, err)
+		}
 	}
+	return nil
 }
 
-// ---- Helpers ----
+// ── helpers ──────────────────────────────────────────────────────────────────
 
 var agePattern = regexp.MustCompile(`(\d+)\s*岁`)
 
@@ -325,7 +334,8 @@ func extractAge(status string) int {
 	return 0
 }
 
-// normalizeRelType maps AI-extracted relation types to Neo4j edge labels.
+// normalizeRelType maps AI-extracted relation type to Neo4j edge label.
+// LOVE_INTEREST is renamed to shorter LOVES.
 func normalizeRelType(t string) string {
 	switch strings.ToUpper(strings.TrimSpace(t)) {
 	case "MASTER_OF":
@@ -335,7 +345,7 @@ func normalizeRelType(t string) string {
 	case "ENEMY_OF":
 		return "ENEMY_OF"
 	case "LOVE_INTEREST":
-		return "LOVE_INTEREST"
+		return "LOVES" // renamed
 	case "BELONGS_TO":
 		return "BELONGS_TO"
 	default:
