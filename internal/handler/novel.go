@@ -1,8 +1,6 @@
 package handler
 
 import (
-	"encoding/json"
-	"fmt"
 	"net/http"
 	"note-memory/internal/memory"
 	"note-memory/internal/model"
@@ -130,52 +128,52 @@ func (h *NovelHandler) TriggerParse(c *gin.Context) {
 
 // GenerateRecap generates a reading recovery recap.
 // AskQuestion handles spoiler-free Q&A with SSE streaming.
-func (h *NovelHandler) AskQuestion(c *gin.Context) {
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的小说 ID"})
-		return
-	}
+// func (h *NovelHandler) AskQuestion(c *gin.Context) {
+// 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+// 	if err != nil {
+// 		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的小说 ID"})
+// 		return
+// 	}
 
-	var req struct {
-		Question string `json:"question"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil || req.Question == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请提供 question"})
-		return
-	}
+// 	var req struct {
+// 		Question string `json:"question"`
+// 	}
+// 	if err := c.ShouldBindJSON(&req); err != nil || req.Question == "" {
+// 		c.JSON(http.StatusBadRequest, gin.H{"error": "请提供 question"})
+// 		return
+// 	}
 
-	// SSE headers
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Header("X-Accel-Buffering", "no")
-	c.Header("Access-Control-Allow-Origin", "*")
+// 	// SSE headers
+// 	c.Header("Content-Type", "text/event-stream")
+// 	c.Header("Cache-Control", "no-cache")
+// 	c.Header("Connection", "keep-alive")
+// 	c.Header("X-Accel-Buffering", "no")
+// 	c.Header("Access-Control-Allow-Origin", "*")
 
-	flusher, ok := c.Writer.(http.Flusher)
-	if !ok {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "streaming not supported"})
-		return
-	}
+// 	flusher, ok := c.Writer.(http.Flusher)
+// 	if !ok {
+// 		c.JSON(http.StatusInternalServerError, gin.H{"error": "streaming not supported"})
+// 		return
+// 	}
 
-	_, err = h.qaSvc.AskQuestion(c.Request.Context(), id, req.Question, func(evt qa.StreamEvent) {
-		data, _ := json.Marshal(evt)
-		switch evt.Type {
-		case "done":
-			c.SSEvent("done", string(data))
-		case "error":
-			c.SSEvent("error", string(data))
-		default:
-			c.SSEvent(evt.Type, string(data))
-		}
-		flusher.Flush()
-	})
+// 	_, err = h.qaSvc.AskQuestion(c.Request.Context(), id, req.Question, func(evt qa.StreamEvent) {
+// 		data, _ := json.Marshal(evt)
+// 		switch evt.Type {
+// 		case "done":
+// 			c.SSEvent("done", string(data))
+// 		case "error":
+// 			c.SSEvent("error", string(data))
+// 		default:
+// 			c.SSEvent(evt.Type, string(data))
+// 		}
+// 		flusher.Flush()
+// 	})
 
-	if err != nil {
-		c.SSEvent("error", fmt.Sprintf(`{"type":"error","content":"%s"}`, err.Error()))
-		flusher.Flush()
-	}
-}
+// 	if err != nil {
+// 		c.SSEvent("error", fmt.Sprintf(`{"type":"error","content":"%s"}`, err.Error()))
+// 		flusher.Flush()
+// 	}
+// }
 
 // ResyncGraph re-syncs existing chapter data to Neo4j without re-running AI.
 func (h *NovelHandler) ResyncGraph(c *gin.Context) {

@@ -4,15 +4,22 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"strings"
 	"time"
 
 	"note-memory/internal/service/qa"
 )
 
-// Runner orchestrates the evaluation: run agent → record → judge.
+// ProgressFunc sets the reading progress for a novel before running a test case.
+// Called with (novelID, chapterNumber). A chapterNumber of 0 means "read all".
+type ProgressFunc func(novelID int64, chapter int) error
+
+// Runner orchestrates the evaluation: run agent → record → assert → judge → report.
 type Runner struct {
-	qaService *qa.Service
-	judge     *Judge
+	qaService  *qa.Service
+	judge      *Judge
+	setProgress ProgressFunc
 
 	// OutputDir is where run records and reports are saved.
 	OutputDir string
@@ -21,24 +28,36 @@ type Runner struct {
 // NewRunner creates a new evaluation runner.
 // qaService must be fully initialized (with models, repos, etc.).
 // judgeModel is the LLM used for scoring (can be the same as the agent's model).
-func NewRunner(qaService *qa.Service, judge *Judge, outputDir string) *Runner {
+// setProgress may be nil (progress is then skipped — caller manages it externally).
+func NewRunner(qaService *qa.Service, judge *Judge, outputDir string, setProgress ProgressFunc) *Runner {
 	return &Runner{
-		qaService: qaService,
-		judge:     judge,
-		OutputDir: outputDir,
+		qaService:   qaService,
+		judge:       judge,
+		OutputDir:   outputDir,
+		setProgress: setProgress,
 	}
 }
 
 // RunSingle executes a single test case and returns the evaluation result.
-// This is the core function: it runs the agent with recording, then scores.
 func (r *Runner) RunSingle(ctx context.Context, tc *TestCase) (*EvalResult, error) {
 	log.Printf("[eval] ── 开始评测: [%s] %s ──", tc.ID, tc.Description)
 	log.Printf("[eval] 问题: %s", tc.Question)
 
-	// 1. Create recorder
+	// 1. Set progress (0 means read all, passed as a large sentinel)
+	if r.setProgress != nil {
+		ch := tc.Progress
+		if ch <= 0 {
+			ch = 1<<31 - 1 // sentinel: read everything
+		}
+		if err := r.setProgress(tc.NovelID, ch); err != nil {
+			log.Printf("[eval] ⚠️ 设置进度失败: %v", err)
+		}
+	}
+
+	// 2. Create recorder
 	rec := NewRecorder(tc.Question, "", tc.Progress)
 
-	// 2. Run agent with recording
+	// 3. Run agent with recording
 	startTime := time.Now()
 	answer, err := r.qaService.AskQuestionWithRecorder(ctx, tc.NovelID, nil, tc.Question, rec)
 	runDuration := time.Since(startTime)
@@ -54,10 +73,7 @@ func (r *Runner) RunSingle(ctx context.Context, tc *TestCase) (*EvalResult, erro
 	}
 	record.Duration = runDuration
 
-	log.Printf("[eval] 工具调用: %d 次 | 思考: %d 段 | 回答长度: %d 字",
-		len(record.ToolCalls), len(record.Thinking), len([]rune(record.FinalAnswer)))
-
-	// 3. Save run record
+	// 4. Save run record
 	if r.OutputDir != "" {
 		path := fmt.Sprintf("%s/%s_record.json", r.OutputDir, tc.ID)
 		if err := SaveRunRecord(record, path); err != nil {
@@ -65,13 +81,10 @@ func (r *Runner) RunSingle(ctx context.Context, tc *TestCase) (*EvalResult, erro
 		}
 	}
 
-	// 4. Run automated assertions
+	// 5. Run automated assertions
 	assertion := RunAssertions(tc, record)
-	if !assertion.Pass {
-		log.Printf("[eval] ⚠️ 断言失败: %v", assertion.Failures)
-	}
 
-	// 5. Run LLM judge
+	// 6. Run LLM judge
 	result := &EvalResult{
 		Case:      tc,
 		Record:    record,
@@ -84,29 +97,31 @@ func (r *Runner) RunSingle(ctx context.Context, tc *TestCase) (*EvalResult, erro
 			log.Printf("[eval] ⚠️ 裁判评分失败: %v", err)
 		} else {
 			result.Judge = judgeResult
-			log.Printf("[eval] ✅ 综合评分: %.1f/5 (准确:%.1f 完整:%.1f 简洁:%.1f 工具:%.1f 安全:%.1f)",
-				judgeResult.Scores.Overall,
-				judgeResult.Scores.Accuracy,
-				judgeResult.Scores.Completeness,
-				judgeResult.Scores.Conciseness,
-				judgeResult.Scores.ToolSelection,
-				judgeResult.Scores.Safety,
-			)
 		}
 	}
 
 	return result, nil
 }
 
-// RunBatch executes multiple test cases and returns a summary report.
+// RunBatch executes multiple test cases sequentially, saves records/reports,
+// and prints live progress to stderr. Returns the final report.
 func (r *Runner) RunBatch(ctx context.Context, cases []*TestCase) (*Report, error) {
+	os.MkdirAll(r.OutputDir, 0755)
+
 	report := &Report{
 		Total:     len(cases),
 		StartedAt: time.Now(),
+		Details:   make([]*EvalResult, 0, len(cases)),
 	}
 
-	results := make([]*EvalResult, 0, len(cases))
-	for _, tc := range cases {
+	fmt.Fprintf(os.Stderr, "\n%s\n", strings.Repeat("━", 72))
+	fmt.Fprintf(os.Stderr, "🔍 RAG 测试 | 共 %d 题\n", len(cases))
+	fmt.Fprintf(os.Stderr, "%s\n\n", strings.Repeat("━", 72))
+
+	for i, tc := range cases {
+		fmt.Fprintf(os.Stderr, "[%d/%d] [%s] %s\n", i+1, len(cases), tc.ID, tc.Description)
+		fmt.Fprintf(os.Stderr, "  Q: %s\n", tc.Question)
+
 		result, err := r.RunSingle(ctx, tc)
 		if err != nil {
 			log.Printf("[eval] ❌ 用例 [%s] 执行失败: %v", tc.ID, err)
@@ -118,22 +133,48 @@ func (r *Runner) RunBatch(ctx context.Context, cases []*TestCase) (*Report, erro
 				},
 			}
 		}
-		results = append(results, result)
+		report.Details = append(report.Details, result)
 
-		if result.Assertion != nil && result.Assertion.Pass {
+		// Per-case one-line status
+		rec := result.Record
+		passIcon := "✅"
+		if rec == nil || (result.Assertion != nil && !result.Assertion.Pass) {
+			passIcon = "❌"
+		}
+		toolN, thinkN, ansLen := 0, 0, 0
+		if rec != nil {
+			toolN = len(rec.ToolCalls)
+			thinkN = len(rec.Thinking)
+			ansLen = len([]rune(rec.FinalAnswer))
+		}
+		dur := time.Duration(0)
+		if rec != nil {
+			dur = rec.Duration
+		}
+		fmt.Fprintf(os.Stderr, "  %s 工具:%d 思考:%d段 答案:%d字 %v\n",
+			passIcon, toolN, thinkN, ansLen, dur.Round(time.Millisecond))
+		if result.Assertion != nil {
+			for _, f := range result.Assertion.Failures {
+				fmt.Fprintf(os.Stderr, "     ⚠️  %s\n", f)
+			}
+		}
+	}
+
+	report.Duration = time.Since(report.StartedAt)
+
+	// Count pass/fail
+	for _, res := range report.Details {
+		if res.Assertion != nil && res.Assertion.Pass {
 			report.Passed++
 		} else {
 			report.Failed++
 		}
 	}
 
-	report.Details = results
-	report.Duration = time.Since(report.StartedAt)
-
-	// Compute average scores
+	// Compute average judge scores
 	if r.judge != nil {
 		var count int
-		for _, res := range results {
+		for _, res := range report.Details {
 			if res.Judge != nil {
 				report.AvgScores.Accuracy += res.Judge.Scores.Accuracy
 				report.AvgScores.Completeness += res.Judge.Scores.Completeness
@@ -154,19 +195,20 @@ func (r *Runner) RunBatch(ctx context.Context, cases []*TestCase) (*Report, erro
 		}
 	}
 
-	// Save report
-	if r.OutputDir != "" {
-		jsonPath := fmt.Sprintf("%s/report.json", r.OutputDir)
-		if err := SaveReport(report, jsonPath); err != nil {
-			log.Printf("[eval] ⚠️ 保存 JSON 报告失败: %v", err)
-		}
-		htmlPath := fmt.Sprintf("%s/report.html", r.OutputDir)
-		if err := SaveHTMLReport(report, htmlPath); err != nil {
-			log.Printf("[eval] ⚠️ 保存 HTML 报告失败: %v", err)
-		} else {
-			log.Printf("[eval] 📄 HTML 报告已保存: %s", htmlPath)
-		}
+	// Save JSON + HTML reports
+	jsonPath := fmt.Sprintf("%s/report.json", r.OutputDir)
+	if err := SaveReport(report, jsonPath); err != nil {
+		log.Printf("[eval] ⚠️ 保存 JSON 报告失败: %v", err)
 	}
+	htmlPath := fmt.Sprintf("%s/report.html", r.OutputDir)
+	if err := SaveHTMLReport(report, htmlPath); err != nil {
+		log.Printf("[eval] ⚠️ 保存 HTML 报告失败: %v", err)
+	} else {
+		log.Printf("[eval] 📄 HTML 报告已保存: %s", htmlPath)
+	}
+
+	// Print console summary
+	PrintConsoleSummary(report)
 
 	return report, nil
 }

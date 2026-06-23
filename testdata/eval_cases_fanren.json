@@ -1,0 +1,442 @@
+[
+  {
+    "id": "realm-001",
+    "description": "境界查询：主角当前修炼程度",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "韩立现在修炼到什么层次了？",
+    "expected_tools": ["query_timeline"],
+    "must_not_mention": ["第51章", "筑基", "金丹", "元婴"]
+  },
+  {
+    "id": "realm-002",
+    "description": "境界查询：长春功修炼进度",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "韩立的长春功练到第几层了？每一层分别是什么时候突破的？",
+    "expected_tools": ["query_timeline"],
+    "must_not_mention": ["第七层", "筑基期"]
+  },
+  {
+    "id": "realm-003",
+    "description": "境界查询：第四层突破方式",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "韩立是怎么突破长春功第四层的？",
+    "expected_tools": ["query_timeline", "search_chapters"],
+    "must_mention": ["黄龙丹", "金髓丸"]
+  },
+  {
+    "id": "realm-004",
+    "description": "境界查询：第四层带来的能力变化",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "韩立练成长春功第四层后，身体有什么变化？",
+    "expected_tools": ["query_timeline", "search_chapters"],
+    "must_mention": ["五感", "听觉", "视觉"]
+  },
+
+  {
+    "id": "rel-001",
+    "description": "关系查询：韩立的师傅是谁",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "韩立的师傅是谁？他们的关系怎么样？",
+    "expected_tools": ["query_relations"],
+    "must_mention": ["墨大夫"]
+  },
+  {
+    "id": "rel-002",
+    "description": "关系查询：使用别名后消歧",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "厉师兄的师父是谁？",
+    "expected_tools": ["resolve_entity", "query_relations"],
+    "must_not_mention": ["第51章"]
+  },
+  {
+    "id": "rel-003",
+    "description": "关系查询：韩立与张铁的关系",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "韩立和张铁是什么关系？张铁后来去哪了？",
+    "expected_tools": ["query_relations"],
+    "must_mention": ["好友", "象甲功"]
+  },
+  {
+    "id": "rel-004",
+    "description": "关系查询：韩立的家人",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "韩立家里有哪些人？他排行第几？",
+    "expected_tools": ["search_chapters"],
+    "must_mention": ["三叔", "排行老四"]
+  },
+  {
+    "id": "rel-005",
+    "description": "关系查询：舞岩的背景关系",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "舞岩是怎么进入七绝堂的？他有什么关系背景？",
+    "expected_tools": ["query_relations", "search_chapters"],
+    "must_mention": ["马副门主", "表姐"]
+  },
+  {
+    "id": "rel-006",
+    "description": "关系查询：韩立与厉飞雨的关系演变",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "韩立和厉飞雨是怎么认识的？他们后来关系怎么样？",
+    "expected_tools": ["query_relations", "search_chapters"],
+    "must_mention": ["抽髓丸", "交换"]
+  },
+
+  {
+    "id": "tech-001",
+    "description": "功法查询：韩立修炼了什么功法",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "韩立修炼了哪些功法？",
+    "expected_tools": ["query_techniques"],
+    "must_mention": ["长春功"],
+    "must_not_mention": ["大衍决", "青元剑诀"]
+  },
+  {
+    "id": "tech-002",
+    "description": "功法查询：张铁修炼的功法",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "张铁修炼的是什么功法？这个功法有什么特点？",
+    "expected_tools": ["query_techniques", "search_chapters"],
+    "must_mention": ["象甲功", "九层"]
+  },
+  {
+    "id": "tech-003",
+    "description": "功法查询：眨眼剑法的修炼条件",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "眨眼剑法是什么？为什么没人练成？",
+    "expected_tools": ["query_techniques", "search_chapters"],
+    "must_mention": ["三不练", "长老"]
+  },
+  {
+    "id": "tech-004",
+    "description": "功法查询：墨大夫的成名绝技",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "墨大夫的成名绝技是什么？威力如何？",
+    "expected_tools": ["query_techniques", "search_chapters"],
+    "must_mention": ["魔银手"]
+  },
+  {
+    "id": "tech-005",
+    "description": "功法查询：七玄门有哪些武功",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "七玄门有哪些厉害的武功和功法？",
+    "expected_tools": ["query_all_techniques", "search_chapters"],
+    "must_mention": ["风雷刀法", "正阳劲"]
+  },
+
+  {
+    "id": "plot-001",
+    "description": "剧情回顾：韩立怎么加入七玄门的",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "韩立是怎么加入七玄门的？入门测试是什么？",
+    "expected_tools": ["get_chapters", "search_chapters"],
+    "must_mention": ["炼骨崖", "三叔"]
+  },
+  {
+    "id": "plot-002",
+    "description": "剧情回顾：韩立如何获得神秘小瓶",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "韩立是怎么得到那个神秘小瓶的？",
+    "expected_tools": ["search_chapters"],
+    "must_mention": ["捡到", "踢到"]
+  },
+  {
+    "id": "plot-003",
+    "description": "剧情回顾：绿液的发现过程",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "韩立是怎么发现神秘绿液的秘密的？",
+    "expected_tools": ["search_chapters"],
+    "must_mention": ["月光", "光点", "催熟"]
+  },
+  {
+    "id": "plot-004",
+    "description": "剧情回顾：厉飞雨抓奸细立功",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "厉飞雨是怎么抓住野狼帮奸细的？",
+    "expected_tools": ["search_chapters", "query_events"],
+    "must_mention": ["名单"]
+  },
+
+  {
+    "id": "event-001",
+    "description": "事件查询：入门测试经过",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "韩立在七玄门的入门测试中经历了什么？结果如何？",
+    "expected_tools": ["query_events", "get_chapters"],
+    "must_mention": ["记名弟子", "炼骨崖"]
+  },
+  {
+    "id": "event-002",
+    "description": "事件查询：墨大夫摊牌事件",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "墨大夫是什么时候对韩立摊牌的？他为什么要这么做？",
+    "expected_tools": ["query_events"],
+    "must_mention": ["尸虫丸", "长春功"]
+  },
+  {
+    "id": "event-003",
+    "description": "事件查询：韩立与墨大夫的最终对决",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "韩立和墨大夫最后是怎么对决的？谁赢了？",
+    "expected_tools": ["query_events", "search_chapters"],
+    "must_mention": ["缠香丝", "魔银手"]
+  },
+  {
+    "id": "event-004",
+    "description": "事件查询：王大胖与张长贵的冲突",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "王大胖为什么和张长贵决斗？最后谁赢了？",
+    "expected_tools": ["query_events", "search_chapters"],
+    "must_mention": ["王样", "退婚"]
+  },
+
+  {
+    "id": "entity-001",
+    "description": "实体消歧：二愣子是谁",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "二愣子是谁？",
+    "expected_tools": ["resolve_entity"],
+    "must_mention": ["韩立"]
+  },
+  {
+    "id": "entity-002",
+    "description": "实体消歧：韩老魔是谁",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "韩老魔指的是谁？",
+    "expected_tools": ["resolve_entity"],
+    "must_mention": ["韩立"]
+  },
+  {
+    "id": "entity-003",
+    "description": "实体消歧：鬼手是谁",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "江湖上被称为'鬼手'的人是谁？他和韩立是什么关系？",
+    "expected_tools": ["resolve_entity", "query_relations"],
+    "must_mention": ["墨居仁", "墨大夫"]
+  },
+  {
+    "id": "entity-004",
+    "description": "实体消歧：厉师兄的真名",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "大家都叫的'厉师兄'，他的真名叫什么？",
+    "expected_tools": ["resolve_entity"],
+    "must_mention": ["厉飞雨"]
+  },
+
+  {
+    "id": "stepback-001",
+    "description": "步回策略：佛怒火莲(不存在于本书)",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "七玄门里有哪些内功心法？这些心法分别有什么特点？",
+    "expected_tools": ["query_all_techniques"],
+    "must_mention": ["正阳劲", "长春功"]
+  },
+  {
+    "id": "stepback-002",
+    "description": "步回策略：先查体系再查具体功法",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "墨大夫修炼的是什么武功？这种武功算什么级别的？",
+    "expected_tools": ["query_all_techniques", "query_techniques"],
+    "must_mention": ["魔银手"]
+  },
+  {
+    "id": "stepback-003",
+    "description": "步回策略：先查全局关系再查恩怨",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "韩立和墨大夫之间到底有什么恩怨？为什么会走到对立的地步？",
+    "expected_tools": ["query_relations", "query_events"],
+    "must_mention": ["尸虫丸", "威胁"]
+  },
+
+  {
+    "id": "multi-001",
+    "description": "多工具协同：人物+功法关联查询",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "厉飞雨修炼了什么武功？他为什么要服用抽髓丸？",
+    "expected_tools": ["query_techniques", "search_chapters"],
+    "must_mention": ["风雷刀法", "抽髓丸"]
+  },
+  {
+    "id": "multi-002",
+    "description": "多工具协同：实体消歧+事件+关系",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "有个叫小算盘的人，你知道他的真名吗？他和韩立是什么关系？",
+    "expected_tools": ["resolve_entity", "query_relations", "search_chapters"],
+    "must_mention": ["金冬宝"]
+  },
+  {
+    "id": "multi-003",
+    "description": "多工具协同：综合剧情问答",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "韩立从上山到与墨大夫对决，一共经历了哪些重要转折？",
+    "expected_tools": ["query_events", "get_chapters"],
+    "must_mention": ["入门测试", "尸虫丸", "闭关"]
+  },
+  {
+    "id": "multi-004",
+    "description": "多工具协同：物品归属查询",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "那个能催熟药草的神秘小瓶，韩立是怎么使用的？发现了什么规律？",
+    "expected_tools": ["search_chapters"],
+    "must_mention": ["绿液", "百年", "月光"]
+  },
+
+  {
+    "id": "edge-001",
+    "description": "边界：不存在的角色",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "萧炎在这本书里是什么境界？",
+    "forbidden_tools": ["query_timeline"],
+    "must_mention": ["不存在", "没有"]
+  },
+  {
+    "id": "edge-002",
+    "description": "边界：不存在的功法",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "韩立会佛怒火莲吗？这是什么级别的斗技？",
+    "forbidden_tools": ["query_techniques"],
+    "must_mention": ["不存在", "没有"]
+  },
+  {
+    "id": "edge-003",
+    "description": "边界：超出阅读进度的章节",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "第200章讲了什么内容？",
+    "must_mention": ["无法", "不能", "超出"],
+    "must_not_mention": ["第200章的内容"]
+  },
+  {
+    "id": "edge-004",
+    "description": "边界：空信息——不存在的神器",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "韩立的玄天斩灵剑是从哪来的？",
+    "must_mention": ["没有", "不存在"],
+    "forbidden_tools": ["query_timeline", "query_techniques"]
+  },
+
+  {
+    "id": "safety-001",
+    "description": "防剧透：确认不透露后续剧情",
+    "novel_id": 1,
+    "progress": 10,
+    "question": "墨大夫后来对韩立做了什么？",
+    "must_not_mention": ["尸虫丸", "摊牌", "挟持"]
+  },
+  {
+    "id": "safety-002",
+    "description": "防剧透：进度限制回答范围",
+    "novel_id": 1,
+    "progress": 5,
+    "question": "韩立在山上修炼了什么厉害的功法？",
+    "must_not_mention": ["长春功", "眨眼剑法", "第四层"]
+  },
+  {
+    "id": "safety-003",
+    "description": "防剧透：进度边界处的查询",
+    "novel_id": 1,
+    "progress": 28,
+    "question": "墨大夫这次下山带回了什么人？",
+    "must_not_mention": ["余子童", "铁奴", "傀儡"]
+  },
+  {
+    "id": "safety-004",
+    "description": "防编造：确认只基于原文回答",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "韩立最后是怎么杀死墨大夫的？",
+    "must_not_mention": ["杀死", "击毙", "斩首"]
+  },
+
+  {
+    "id": "faction-001",
+    "description": "势力查询：七玄门组织结构",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "七玄门内部有哪些分堂？各自负责什么？",
+    "expected_tools": ["search_chapters"],
+    "must_mention": ["百锻堂", "七绝堂", "供奉堂"]
+  },
+  {
+    "id": "faction-002",
+    "description": "势力查询：七玄门的对手",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "七玄门的主要对手是谁？双方实力对比如何？",
+    "expected_tools": ["search_chapters"],
+    "must_mention": ["野狼帮", "贾天龙"]
+  },
+  {
+    "id": "faction-003",
+    "description": "势力查询：七玄门的历史",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "七玄门是谁创立的？现在为什么沦为了三流势力？",
+    "expected_tools": ["search_chapters"],
+    "must_mention": ["七绝上人", "彩霞山"]
+  },
+
+  {
+    "id": "item-001",
+    "description": "物品查询：神秘小瓶的能力",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "韩立的神秘小瓶有什么功能？它是怎么吸收光点的？",
+    "expected_tools": ["search_chapters"],
+    "must_mention": ["月光", "绿液", "光点"]
+  },
+  {
+    "id": "item-002",
+    "description": "物品查询：韩立炼制的丹药",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "韩立用绿液催熟药材后炼制了哪些丹药？各有什么功效？",
+    "expected_tools": ["search_chapters"],
+    "must_mention": ["黄龙丹", "金髓丸", "清灵散", "养精丹"]
+  },
+  {
+    "id": "item-003",
+    "description": "物品查询：抽髓丸的信息",
+    "novel_id": 1,
+    "progress": 50,
+    "question": "抽髓丸是什么药？有什么效果和副作用？",
+    "expected_tools": ["search_chapters"],
+    "must_mention": ["透支", "寿命", "十年"]
+  }
+]

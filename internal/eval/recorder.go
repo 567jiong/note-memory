@@ -128,18 +128,6 @@ func SaveRunRecord(record *RunRecord, path string) error {
 	return nil
 }
 
-// LoadRunRecord reads a RunRecord from a JSON file.
-func LoadRunRecord(path string) (*RunRecord, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read run record: %w", err)
-	}
-	var r RunRecord
-	if err := json.Unmarshal(b, &r); err != nil {
-		return nil, fmt.Errorf("unmarshal run record: %w", err)
-	}
-	return &r, nil
-}
 
 func truncate(s string, maxLen int) string {
 	runes := []rune(s)

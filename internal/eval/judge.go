@@ -123,23 +123,6 @@ func (j *Judge) Score(ctx context.Context, tc *TestCase, record *RunRecord) (*Ju
 	return parseJudgeResponse(resp.Content)
 }
 
-// ScoreBatch evaluates multiple test cases in sequence.
-func (j *Judge) ScoreBatch(ctx context.Context, cases []*TestCase, records []*RunRecord) ([]*JudgeResult, error) {
-	if len(cases) != len(records) {
-		return nil, fmt.Errorf("cases and records length mismatch: %d vs %d", len(cases), len(records))
-	}
-
-	results := make([]*JudgeResult, len(cases))
-	for i := range cases {
-		r, err := j.Score(ctx, cases[i], records[i])
-		if err != nil {
-			return nil, fmt.Errorf("score case %s: %w", cases[i].ID, err)
-		}
-		r.CaseID = cases[i].ID
-		results[i] = r
-	}
-	return results, nil
-}
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
